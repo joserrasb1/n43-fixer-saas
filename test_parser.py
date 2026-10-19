@@ -328,44 +328,64 @@ def _reg80(clave, campos):
     return "".join(l)
 
 
+def _cab(entidad="2100", oficina="0418", cuenta="1234567890", fecha="150925",
+         clave="2", saldo="00000000500000", divisa="EUR"):
+    # type: (str, str, str, str, str, str, str) -> str
+    """Registro 11 (cabecera): entidad 2:6, oficina 6:10, cuenta 10:20,
+    fecha apertura 21:27 (DDMMAA), clave de saldo en el índice 27, saldo
+    inicial de 14 dígitos en 28:42 y divisa en 42:45."""
+    return _reg80("11", [
+        (3, entidad), (7, oficina), (11, cuenta),
+        (22, fecha), (28, clave), (29, saldo), (43, divisa),
+    ])
+
+
+def _mov(fecha_op="250915", fecha_valor="250917", clave_dh="2",
+         importe="00000000215000", concepto="NOMINA1"):
+    # type: (str, str, str, str, str) -> str
+    """Registro 22 (movimiento): fecha operación 10:16 y fecha valor 16:22
+    (AAMMDD), clave debe/haber en el índice 27, importe de 14 dígitos en
+    28:42 y concepto en 52:80."""
+    return _reg80("22", [
+        (3, "01"), (11, fecha_op), (17, fecha_valor),
+        (28, clave_dh), (29, importe), (53, concepto),
+    ])
+
+
+def _reg33(num_debe="00000", total_debe="00000000000000",
+           num_haber="00000", total_haber="00000000000000",
+           clave="2", saldo="00000000000000"):
+    # type: (str, str, str, str, str, str) -> str
+    """Registro 33 (final de cuenta): núm. movs debe 19:24, total debe 24:38,
+    núm. movs haber 38:43, total haber 43:57, clave de saldo final en el
+    índice 57 y saldo final de 14 dígitos en 58:72."""
+    return _reg80("33", [
+        (20, num_debe), (25, total_debe), (39, num_haber),
+        (44, total_haber), (58, clave), (59, saldo),
+    ])
+
+
 def _n43_estandar(descuadre=False, fin="99"):
     # type: (bool, str) -> str
     """Fichero AEB 43 estricto: saldo inicial 5.000,00 y 5 movimientos.
 
     Movimientos: +2150,00 -875,25 -950,00 +3400,00 -12,50 = +3712,25
-    → saldo final debe cuadrar en 8712,25.
+    → saldo final debe cuadrar en 8712,25 (cargos 1.837,75; abonos 5.550,00).
     """
-    cab = _reg80("11", [
-        (3, "2100"), (7, "0418"), (11, "1234567890"),
-        (21, "150925"),              # fecha apertura DDMMAA (índices 20:26)
-        (27, "2"),                   # clave saldo inicial (índice 26)
-        (28, "000000500000"),        # saldo inicial 12 dígitos (índices 27:39)
-        (40, "EUR"),                 # divisa (índices 39:42, fuera del saldo)
-    ])
-
-    def mov(fecha, clave_dh, importe, doc):
-        return _reg80("22", [
-            (3, "01"),               # clave de operación (índices 2:4)
-            (11, fecha),             # fecha operación AAMMDD (índices 10:16)
-            (28, clave_dh),          # debe/haber (índice 27)
-            (29, importe),           # importe 14 dígitos (índices 28:42)
-            (43, doc),               # concepto común/propio (desde índice 42)
-        ])
-
+    cab = _cab()
     movs = [
-        mov("250915", "2", "00000000215000", "NOMINA1"),   # abono  +2150,00
-        mov("250910", "1", "00000000087525", "IVA1"),      # cargo   -875,25
-        mov("251001", "1", "00000000095000", "ALQ1"),      # cargo   -950,00
-        mov("251003", "2", "00000000340000", "COB1"),      # abono  +3400,00
-        mov("251001", "1", "00000000001250", "COM1"),      # cargo    -12,50
+        _mov("250915", "250917", "2", "00000000215000", "NOMINA1"),   # +2150,00
+        _mov("250910", "250912", "1", "00000000087525", "IVA1"),      #  -875,25
+        _mov("251001", "251003", "1", "00000000095000", "ALQ1"),      #  -950,00
+        _mov("251003", "251005", "2", "00000000340000", "COB1"),      # +3400,00
+        _mov("251001", "251003", "1", "00000000001250", "COM1"),      #   -12,50
     ]
-    saldo_final = "000000871100" if descuadre else "000000871225"
-    fin_cuenta = _reg80("33", [
-        (3, "2100"), (7, "0418"), (11, "1234567890"),
-        (27, "2"),                   # clave saldo final (índice 26)
-        (28, saldo_final),           # saldo final 12 dígitos (índices 27:39)
-        (40, "EUR"),                 # divisa (índices 39:42)
-    ])
+    saldo_final = "00000000871100" if descuadre else "00000000871225"
+    fin_cuenta = _reg33(
+        num_debe="00003", total_debe="00000000183775",
+        num_haber="00002", total_haber="00000000555000",
+        clave="2", saldo=saldo_final,
+    )
     return "\n".join([cab] + movs + [fin_cuenta, _reg80(fin, [])])
 
 
@@ -386,25 +406,32 @@ def test_parse_correcto_minimo(parser: N43Parser):
 
 def test_parse_cuadra_exacto_avisa(parser: N43Parser):
     """Con registro 33 que cuadra exacto se emite aviso informativo (ok=True)."""
-    cab = _reg80("11", [(27, "2"), (28, "000000010000")])   # saldo 100,00
-    mov = _reg80("22", [
-        (11, "251015"), (28, "2"), (29, "00000000010000"), (43, "ABONO"),
-    ])
-    fin = _reg80("33", [(27, "2"), (28, "000000020000")])   # saldo 200,00
+    cab = _cab(saldo="00000000010000")                    # saldo inicial 100,00
+    mov = _mov("251015", "251017", "2", "00000000010000", "ABONO")
+    fin = _reg33(
+        num_haber="00001", total_haber="00000000010000",
+        clave="2", saldo="00000000020000",                 # saldo final 200,00
+    )
     txt = "\n".join([cab, mov, fin, _reg80("99", [])])
     res = parser._parse_text(txt, filename="cuadra.txt")
     assert res.ok is True
     assert res.saldos["diferencia_saldo_final"] == 0.00
+    assert res.trailer["total_debe"] == 0.00
+    assert res.trailer["total_haber"] == 100.00
     assert any("cuadran" in w.lower() for w in res.warnings)
 
 
 def test_parse_varios_movimientos_signos(parser: N43Parser):
     txt = "\n".join([
-        _reg80("11", [(27, "2"), (28, "00000000000000")]),
-        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000010000"), (43, "A")]),
-        _reg80("22", [(11, "251002"), (28, "1"), (29, "00000000002000"), (43, "B")]),
-        _reg80("22", [(11, "251003"), (28, "2"), (29, "00000000005000"), (43, "C")]),
-        _reg80("33", [(27, "2"), (28, "000000013000")]),
+        _cab(saldo="00000000000000"),                      # saldo inicial 0,00
+        _mov("251001", "251003", "2", "00000000010000", "A"),
+        _mov("251002", "251004", "1", "00000000002000", "B"),
+        _mov("251003", "251005", "2", "00000000005000", "C"),
+        _reg33(
+            num_debe="00001", total_debe="00000000002000",
+            num_haber="00002", total_haber="00000000015000",
+            clave="2", saldo="00000000013000",             # saldo final 130,00
+        ),
         _reg80("99", []),
     ])
     res = parser._parse_text(txt, filename="multi.txt")
@@ -415,23 +442,20 @@ def test_parse_varios_movimientos_signos(parser: N43Parser):
 
 
 def test_parse_fecha_extraccion(parser: N43Parser):
-    """Fecha de operación en índices 10:16 con formato AAMMDD."""
-    cab = _reg80("11", [(27, "2"), (28, "00000000000000")])
-    mov = _reg80("22", [
-        (11, "250105"), (28, "2"), (29, "00000000000001"),
-    ])
+    """Fechas de operación (10:16) y valor (16:22) en formato AAMMDD."""
+    cab = _cab(saldo="00000000000000")
+    mov = _mov("250105", "250107", "2", "00000000000001", "")
     txt = "\n".join([cab, mov, _reg80("99", [])])
     res = parser._parse_text(txt, filename="fecha.txt")
     assert res.movimientos[0].fecha_operacion == "2025-01-05"
+    assert res.movimientos[0].fecha_valor == "2025-01-07"
 
 
 def test_parse_concepto(parser: N43Parser):
-    """El concepto común/propio se lee desde el índice 42."""
-    cab = _reg80("11", [(27, "2"), (28, "00000000000000")])
-    mov = _reg80("22", [
-        (11, "251001"), (28, "2"), (29, "00000000000001"),
-        (43, "CONCEPTO LARGO PARA TEST"),
-    ])
+    """El concepto se lee en los índices 52:80."""
+    cab = _cab(saldo="00000000000000")
+    mov = _mov("251001", "251003", "2", "00000000000001",
+               "CONCEPTO LARGO PARA TEST")
     txt = "\n".join([cab, mov, _reg80("99", [])])
     res = parser._parse_text(txt, filename="conc.txt")
     assert res.movimientos[0].concepto == "CONCEPTO LARGO PARA TEST"
@@ -470,7 +494,7 @@ def test_parse_longitud_corta(parser: N43Parser):
 
 def test_parse_no_cabecera(parser: N43Parser):
     txt = "\n".join([
-        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000010000")]),
+        _mov("251001", "251003", "2", "00000000010000"),
         _reg80("99", []),
     ])
     res = parser._parse_text(txt, filename="nocab.txt")
@@ -479,10 +503,11 @@ def test_parse_no_cabecera(parser: N43Parser):
 
 def test_parse_multiples_cabeceras(parser: N43Parser):
     txt = "\n".join([
-        _reg80("11", [(27, "2"), (28, "00000000000000")]),
-        _reg80("11", [(27, "2"), (28, "00000000000000")]),
-        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000010000")]),
-        _reg80("33", [(27, "2"), (28, "000000010000")]),
+        _cab(saldo="00000000000000"),
+        _cab(saldo="00000000000000"),
+        _mov("251001", "251003", "2", "00000000010000"),
+        _reg33(num_haber="00001", total_haber="00000000010000",
+               clave="2", saldo="00000000010000"),
         _reg80("99", []),
     ])
     res = parser._parse_text(txt, filename="multicab.txt")
@@ -492,8 +517,8 @@ def test_parse_multiples_cabeceras(parser: N43Parser):
 def test_parse_sin_trailer(parser: N43Parser):
     """Sin registro 33 ni fin de archivo 88/99 se avisa de ambos."""
     txt = "\n".join([
-        _reg80("11", [(27, "2"), (28, "00000000000000")]),
-        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000005000")]),
+        _cab(saldo="00000000000000"),
+        _mov("251001", "251003", "2", "00000000005000"),
     ])
     res = parser._parse_text(txt, filename="sintrailer.txt")
     assert "FINAL DE CUENTA (tipo 33)" in " ".join(res.warnings)
@@ -502,7 +527,7 @@ def test_parse_sin_trailer(parser: N43Parser):
 
 def test_parse_sin_movimientos(parser: N43Parser):
     txt = "\n".join([
-        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        _cab(saldo="00000000000000"),
         _reg80("99", []),
     ])
     res = parser._parse_text(txt, filename="sinmovs.txt")
@@ -524,10 +549,11 @@ def test_parse_solo_espacios(parser: N43Parser):
 def test_parse_otro_tipo(parser: N43Parser):
     """Los registros ajenos a 11/22/33/88/99 se ignoran con aviso."""
     txt = "\n".join([
-        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        _cab(saldo="00000000000000"),
         _reg80("13", []),   # cabecera de cuenta: tipo no soportado
-        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000010000")]),
-        _reg80("33", [(27, "2"), (28, "000000010000")]),
+        _mov("251001", "251003", "2", "00000000010000"),
+        _reg33(num_haber="00001", total_haber="00000000010000",
+               clave="2", saldo="00000000010000"),
         _reg80("99", []),
     ])
     res = parser._parse_text(txt, filename="otro.txt")
@@ -537,7 +563,7 @@ def test_parse_otro_tipo(parser: N43Parser):
 
 def test_parse_importe_no_identificable(parser: N43Parser):
     txt = "\n".join([
-        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        _cab(saldo="00000000000000"),
         "22SINIMPORTECLAROXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
         _reg80("99", []),
     ])
@@ -546,11 +572,11 @@ def test_parse_importe_no_identificable(parser: N43Parser):
 
 
 def test_parse_reg33_sin_saldo_legible(parser: N43Parser):
-    """Sin fallback heurístico: si 27:39 no es numérico se avisa y no se inventa."""
+    """Sin fallback heurístico: si 58:72 no es numérico se avisa y no se inventa."""
     txt = "\n".join([
-        _reg80("11", [(27, "2"), (28, "00000000000000")]),
-        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000010000")]),
-        _reg80("33", [(27, "2"), (28, "XXXXXXXXXXXX")]),
+        _cab(saldo="00000000000000"),
+        _mov("251001", "251003", "2", "00000000010000"),
+        _reg33(clave="2", saldo="XXXXXXXXXXXXXX"),
         _reg80("99", []),
     ])
     res = parser._parse_text(txt, filename="reg33sin.txt")
@@ -560,7 +586,7 @@ def test_parse_reg33_sin_saldo_legible(parser: N43Parser):
 
 def test_parse_movimiento_corto(parser: N43Parser):
     txt = "\n".join([
-        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        _cab(saldo="00000000000000"),
         "22ABC",
         _reg80("99", []),
     ])
@@ -577,10 +603,11 @@ def test_parse_lineas_vacias_mayoria(parser: N43Parser):
 
 def test_parse_reg33_ultimo_si_multiples(parser: N43Parser):
     txt = "\n".join([
-        _reg80("11", [(27, "2"), (28, "00000000000000")]),
-        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000005000")]),
-        _reg80("33", [(27, "2"), (28, "000000000400")]),
-        _reg80("33", [(27, "2"), (28, "000000000500")]),
+        _cab(saldo="00000000000000"),
+        _mov("251001", "251003", "2", "00000000005000"),
+        _reg33(clave="2", saldo="00000000000400"),
+        _reg33(num_haber="00001", total_haber="00000000005000",
+               clave="2", saldo="00000000000500"),
         _reg80("99", []),
     ])
     res = parser._parse_text(txt, filename="multireg33.txt")
@@ -596,7 +623,7 @@ def test_estandar_cuadre_completo(parser: N43Parser):
     assert res.resumen["tiene_cabecera"] is True
     assert res.resumen["tiene_trailer"] is True
     assert len(res.movimientos) == 5
-    # Saldo inicial registro 11 (índices 27:39, clave '2' acreedor = positivo)
+    # Saldo inicial registro 11 (índices 28:42, clave '2' acreedor = positivo)
     assert res.saldos["saldo_inicial_estimado"] == 5000.00
     # Importes firmados según clave debe/haber (índice 27)
     assert [m.importe for m in res.movimientos] == [
@@ -607,10 +634,14 @@ def test_estandar_cuadre_completo(parser: N43Parser):
     # Cuadre estricto: 5000 + 3712,25 = 8712,25 declarado en el registro 33
     assert res.saldos["saldo_final_declarado_trailer"] == 8712.25
     assert res.saldos["diferencia_saldo_final"] == 0.00
-    # Registro 33: clave y saldo final en los mismos índices que el reg. 11
+    # Registro 33: contadores y totales al debe/haber (índices 19:24 ... 43:57)
+    assert res.trailer["num_movimientos_debe"] == 3
+    assert res.trailer["total_debe"] == 1837.75
+    assert res.trailer["num_movimientos_haber"] == 2
+    assert res.trailer["total_haber"] == 5550.00
+    # Clave de saldo final (índice 57) y saldo final (58:72)
     assert res.trailer["clave_saldo_final"] == "2"
     assert res.trailer["saldo_final"] == 8712.25
-    assert res.trailer["divisa"] == "EUR"
 
 
 def test_estandar_registro22_signo_cero_advertencia(parser: N43Parser):
@@ -624,15 +655,9 @@ def test_estandar_registro22_signo_cero_advertencia(parser: N43Parser):
 
 
 def test_estandar_registro11_saldo_deudor(parser: N43Parser):
-    """Clave '1' en el índice 26 del registro 11 → saldo inicial negativo."""
-    cab = _reg80("11", [
-        (3, "2100"), (7, "0418"), (11, "1234567890"),
-        (21, "150925"), (27, "1"), (28, "000000010000"), (40, "EUR"),
-    ])
-    mov = _reg80("22", [
-        (3, "01"), (11, "250915"),
-        (28, "2"), (29, "00000000050000"), (43, "TEST1"),
-    ])
+    """Clave '1' en el índice 27 del registro 11 → saldo inicial negativo."""
+    cab = _cab(clave="1", saldo="00000000010000")   # -100,00 (14 dígitos)
+    mov = _mov("250915", "250917", "2", "00000000050000", "TEST1")
     fin = _reg80("99", [])
     res = parser._parse_text("\n".join([cab, mov, fin]), filename="deudor.txt")
     assert res.cabecera["registro"] == "11"
@@ -649,10 +674,10 @@ def test_estandar_registro22_fechas_y_concepto(parser: N43Parser):
     res = parser._parse_text(_n43_estandar(), filename="fechas22.txt")
     m = res.movimientos[0]
     assert m.fecha_operacion == "2025-09-15"   # índices 10:16 (AAMMDD "250915")
-    assert m.fecha_valor is None               # no definido en este layout
+    assert m.fecha_valor == "2025-09-17"       # índices 16:22 (AAMMDD "250917")
     assert m.extra["clave_debe_haber"] == "2"  # índice 27
     assert m.extra["clave_operacion"] == "01"
-    assert m.concepto == "NOMINA1"             # concepto desde el índice 42
+    assert m.concepto == "NOMINA1"             # concepto en 52:80
 
 
 def test_estandar_descuadre_saldo(parser: N43Parser):

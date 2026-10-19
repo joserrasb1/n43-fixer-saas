@@ -12,18 +12,20 @@ Normalización y registros reconocidos (índices 0-based):
    - Cada línea se normaliza a EXACTAMENTE 80 caracteres:
      * si es más corta -> se completa con espacios a la derecha (.ljust(80))
      * si es más larga  -> se recorta a los primeros 80 (linea[:80])
-   - Registro 11 (cabecera de fichero): clave de saldo inicial en el índice 26
-     ('1' deudor = negativo, '2' acreedor = positivo), saldo inicial en los
-     índices 27:39 (12 dígitos, 2 decimales) y código de divisa en 39:42
-     (el campo divisa queda FUERA del saldo: no puede interferir).
-   - Registro 22 (movimiento): fecha de operación en índices 10:16 (formato
-     AAMMDD), clave de debe/haber en el índice 27 ('1' = cargo = negativo,
-     '2' = abono = positivo; nunca '0'), importe en índices 28:42
-     (14 dígitos, los 2 últimos son decimales) y concepto común/propio a
-     partir del índice 42 en adelante.
-   - Registro 33 (final de cuenta): clave de saldo final en el índice 26
-     ('1'/'2') y saldo final en índices 27:39 (12 dígitos, 2 decimales)
-     para verificar el cuadre.
+   - Registro 11 (cabecera de fichero): entidad 2:6, oficina 6:10, cuenta
+     10:20, fecha apertura 21:27, clave de saldo inicial en el índice 27
+     ('1' deudor = negativo, '2' acreedor = positivo), saldo inicial en
+     28:42 (14 dígitos, 2 decimales) y divisa en 42:45 (fuera del saldo).
+   - Registro 22 (movimiento): fecha de operación en 10:16 (AAMMDD), fecha
+     valor en 16:22 (AAMMDD), clave de debe/haber en el índice 27 ('1' =
+     cargo = negativo, '2' = abono = positivo; nunca '0'), importe en 28:42
+     (14 dígitos, 2 decimales implícitos) y concepto en 52:80.
+   - Registro 33 (final de cuenta): núm. movimientos al debe 19:24, total
+     debe 24:38 (14 dígitos), núm. movimientos al haber 38:43, total haber
+     43:57 (14 dígitos), clave de saldo final en el índice 57 ('1'/'2') y
+     saldo final 58:72 (14 dígitos) para verificar el cuadre.
+   - Todos los importes usan 14 dígitos con 2 decimales implícitos
+     (int(campo) / 100.0); nunca se añaden ceros de más.
    - Registro 88/99 (fin de archivo): reconocidos como tráiler de cierre
      (tiene_trailer = true).
    - Cualquier otro tipo de registro (13, 23, 34...) se ignora con un aviso:
@@ -194,11 +196,12 @@ class N43Parser:
     Parser determinista para ficheros Norma 43 AEB.
 
     Estructura AEB 43 (posiciones fijas, 80 caracteres por línea, índices 0-based):
-    - 11: cabecera de fichero (clave saldo índice 26, saldo inicial 27:39,
-      divisa 39:42)
-    - 22: movimiento (fecha operación 10:16 AAMMDD, debe/haber índice 27,
-      importe 28:42, concepto desde el índice 42)
-    - 33: final de cuenta (clave saldo final índice 26, saldo final 27:39)
+    - 11: cabecera de fichero (entidad 2:6, oficina 6:10, cuenta 10:20,
+      fecha apertura 21:27, clave saldo 27, saldo inicial 28:42, divisa 42:45)
+    - 22: movimiento (fecha operación 10:16 AAMMDD, fecha valor 16:22 AAMMDD,
+      debe/haber índice 27, importe 28:42, concepto 52:80)
+    - 33: final de cuenta (núm. debe 19:24, total debe 24:38, núm. haber
+      38:43, total haber 43:57, clave saldo final 57, saldo final 58:72)
     - 88/99: fin de archivo (tráiler de cierre)
 
     El parseo es siempre estricto: no hay fallback heurístico. Los registros
@@ -213,22 +216,35 @@ class N43Parser:
     # ------------------------- CAMPOS DE POSICIÓN FIJA -------------------------
 
     @staticmethod
-    def _campo_importe(campo):
+    def _importe_14(campo):
         # type: (str) -> Optional[Decimal]
-        """Convierte un campo numérico posicional (2 decimales implícitos) a Decimal.
+        """Convierte un campo de importe/saldo de 14 dígitos a Decimal.
 
-        Acepta espacios de relleno a la izquierda y longitudes 12 (saldos)
-        o 14 (importes); devuelve None si no son todos dígitos.
+        El estándar AEB 43 usa SIEMPRE 14 dígitos con 2 decimales implícitos
+        (int(campo) / 100.0). No se añaden ceros: si el campo (una vez quitados
+        los espacios de relleno) no tiene exactamente 14 dígitos, devuelve None.
         """
         s = campo.replace(" ", "")
-        if not s or not s.isdigit():
+        if len(s) != 14 or not s.isdigit():
             return None
         with localcontext() as ctx:
             ctx.prec = 200
             try:
-                return (Decimal(s) / Decimal(100)).quantize(Decimal("0.01"))
+                return Decimal(int(s)) / Decimal(100)
             except (InvalidOperation, ValueError):
                 return None
+
+    @staticmethod
+    def _entero(campo):
+        # type: (str) -> Optional[int]
+        """Convierte un contador posicional (p.ej. número de movimientos)."""
+        s = campo.replace(" ", "")
+        if not s or not s.isdigit():
+            return None
+        try:
+            return int(s)
+        except ValueError:  # pragma: no cover - isdigit lo garantiza
+            return None
 
     @staticmethod
     def _fecha_estandar(campo):
@@ -442,10 +458,10 @@ class N43Parser:
 
     def _extract_cabecera(self, res):
         # type: (ParseResult) -> None
-        """Registro 11: cabecera de fichero con clave de saldo inicial en el
-        índice 26 ('1' deudor = negativo, '2' acreedor = positivo), saldo
-        inicial en los índices 27:39 (12 dígitos, 2 decimales) y código de
-        divisa en 39:42 (fuera del saldo: no puede interferir en su lectura)."""
+        """Registro 11: entidad 2:6, oficina 6:10, cuenta 10:20, fecha
+        apertura 21:27, clave de saldo inicial en el índice 27 ('1' deudor =
+        negativo, '2' acreedor = positivo), saldo inicial 28:42 (14 dígitos)
+        y divisa 42:45 (fuera del saldo: no puede interferir en su lectura)."""
         cab = [l for l in res.lineas if l.normalized.startswith("11")]
         if not cab:
             res.errores.append("Falta registro de CABECERA (tipo 11)")
@@ -456,8 +472,8 @@ class N43Parser:
             )
         li = cab[0]
         l = li.normalized
-        clave_saldo = l[26:27]
-        saldo_dec = self._campo_importe(l[27:39])
+        clave_saldo = l[27]
+        saldo_dec = self._importe_14(l[28:42])
         mult = None
         if clave_saldo == "1":
             mult = Decimal("-1")
@@ -473,7 +489,7 @@ class N43Parser:
             saldo_inicial = float(saldo_dec * (mult if mult is not None else Decimal("1")))
         else:
             res.warnings.append(
-                "Registro 11: saldo inicial no identificable en índices 27:39"
+                "Registro 11: saldo inicial no identificable en índices 28:42"
             )
         res.cabecera = {
             "linea": li.lineno,
@@ -481,32 +497,44 @@ class N43Parser:
             "entidad": l[2:6].strip(),
             "oficina": l[6:10].strip(),
             "cuenta": l[10:20].strip(),
-            "fecha_apertura": self._fecha_estandar(l[20:26]),
+            "fecha_apertura": self._fecha_estandar(l[21:27]),
             "clave_saldo": clave_saldo,
             "saldo_inicial": saldo_inicial,
-            "divisa": l[39:42].strip(),
+            "divisa": l[42:45].strip(),
             "longitud": li.length,
         }
 
     def _extract_movimientos(self, res):
         # type: (ParseResult) -> None
         """Registro 22: fecha de operación (índices 10:16, formato AAMMDD),
-        clave de debe/haber (índice 27, '1' = cargo = negativo/gasto,
-        '2' = abono = positivo/ingreso; nunca '0'), importe (índices 28:42,
-        14 dígitos con 2 decimales implícitos) y concepto común/propio a
-        partir del índice 42 en adelante."""
+        fecha valor (índices 16:22, AAMMDD), clave de debe/haber (índice 27,
+        '1' = cargo = negativo/gasto, '2' = abono = positivo/ingreso; nunca
+        '0'), importe (índices 28:42, 14 dígitos con 2 decimales implícitos) y
+        concepto (índices 52:80)."""
         movs = [l for l in res.lineas if l.normalized.startswith("22")]
         if not movs:
             res.warnings.append("No se detectan registros de MOVIMIENTO (tipo 22)")
         for ml in movs:
             l = ml.normalized
             m = Movement(linea=ml.lineno)
-            m.fecha_operacion = _parse_date_aammdd(l[10:16])
-            m.fecha_valor = None  # no definido en este layout del estándar
-            m.concepto = l[42:].strip() or None
+            fop = l[10:16]
+            m.fecha_operacion = _parse_date_aammdd(fop)
+            if fop.strip() and m.fecha_operacion is None:
+                res.warnings.append(
+                    "Línea %d: fecha de operación %r no válida en registro 22"
+                    % (ml.lineno, fop.strip())
+                )
+            fval = l[16:22]
+            m.fecha_valor = _parse_date_aammdd(fval)
+            if fval.strip() and m.fecha_valor is None:
+                res.warnings.append(
+                    "Línea %d: fecha valor %r no válida en registro 22"
+                    % (ml.lineno, fval.strip())
+                )
+            m.concepto = l[52:80].strip() or None
             clave_op = l[2:4].strip()
-            clave_dh = l[27:28]
-            importe = self._campo_importe(l[28:42])
+            clave_dh = l[27]
+            importe = self._importe_14(l[28:42])
             mult = None
             if clave_dh == "1":
                 mult = Decimal("-1")   # debe/cargo: negativo / gasto
@@ -530,11 +558,11 @@ class N43Parser:
 
     def _extract_final(self, res):
         # type: (ParseResult) -> None
-        """Registro 33 (final de cuenta): clave de saldo final en el índice 26
-        ('1' deudor = negativo, '2' acreedor = positivo) y saldo final en los
-        índices 27:39 (12 dígitos, 2 decimales) — mismas posiciones que el
-        registro 11, con el divisa en 39:42 fuera del saldo. Registro 88/99:
-        fin de archivo, reconocido como tráiler de cierre."""
+        """Registro 33 (final de cuenta): núm. movimientos al debe 19:24, total
+        debe 24:38 (14 dígitos), núm. movimientos al haber 38:43, total haber
+        43:57 (14 dígitos), clave de saldo final en el índice 57 ('1' deudor =
+        negativo, '2' acreedor = positivo) y saldo final 58:72 (14 dígitos).
+        Registro 88/99: fin de archivo, reconocido como tráiler de cierre."""
         fin_cuenta = [l for l in res.lineas if l.record_hint == "FINAL_CUENTA"]
         fin_fichero = [l for l in res.lineas if l.record_hint == "TRAILER"]
         if not fin_cuenta:
@@ -549,11 +577,15 @@ class N43Parser:
         if fin_cuenta:
             li = fin_cuenta[-1]
             l = li.normalized
-            clave_sf = l[26:27]                       # clave de saldo final
-            saldo_decl = self._campo_importe(l[27:39])  # saldo final (12 dígitos)
+            num_debe = self._entero(l[19:24])          # núm. movimientos debe
+            total_debe = self._importe_14(l[24:38])    # total debe (14 dígitos)
+            num_haber = self._entero(l[38:43])         # núm. movimientos haber
+            total_haber = self._importe_14(l[43:57])   # total haber (14 dígitos)
+            clave_sf = l[57]                           # clave de saldo final
+            saldo_decl = self._importe_14(l[58:72])    # saldo final (14 dígitos)
             if saldo_decl is None:
                 res.warnings.append(
-                    "Registro 33: saldo final no identificable en índices 27:39"
+                    "Registro 33: saldo final no identificable en índices 58:72"
                 )
             # Signo del saldo final según su clave ('1' negativo, '2' positivo)
             if clave_sf == "1":
@@ -568,16 +600,16 @@ class N43Parser:
                         "(esperada 1 o 2)" % clave_sf
                     )
             if saldo_decl is not None:
-                saldo_decl = (saldo_decl * saldo_mult).quantize(Decimal("0.01"))
+                saldo_decl = saldo_decl * saldo_mult
             res.trailer = {
                 "linea": li.lineno,
                 "registro": "33",
-                "entidad": l[2:6].strip(),
-                "oficina": l[6:10].strip(),
-                "cuenta": l[10:20].strip(),
+                "num_movimientos_debe": num_debe,
+                "total_debe": float(total_debe) if total_debe is not None else None,
+                "num_movimientos_haber": num_haber,
+                "total_haber": float(total_haber) if total_haber is not None else None,
                 "clave_saldo_final": clave_sf,
                 "saldo_final": float(saldo_decl) if saldo_decl is not None else None,
-                "divisa": l[39:42].strip(),
                 "longitud": li.length,
             }
         if not fin_fichero:
@@ -595,25 +627,41 @@ class N43Parser:
 
     def _validate_balances(self, res):
         # type: (ParseResult) -> None
-        """Cuadre estricto AEB: saldo inicial (reg. 11) + movimientos (reg. 22)
-        = saldo final declarado (reg. 33). Si el tráiler declarara además la
-        suma de importes o el número de movimientos, se contrastan también."""
+        """Cuadre estricto AEB 43:
+        - saldo inicial (reg. 11) + movimientos firmados (reg. 22) = saldo
+          final declarado (reg. 33);
+        - número de movimientos y totales al debe/haber declarados en el
+          registro 33 frente a lo parseado (si están presentes)."""
         with localcontext() as ctx:
             ctx.prec = 200
             suma = Decimal("0.00")
+            suma_debe = Decimal("0.00")
+            suma_haber = Decimal("0.00")
+            num_debe = 0
+            num_haber = 0
             for m in res.movimientos:
                 d = _to_decimal(m.importe) if m.importe is not None else None
                 if d is None:
                     continue
                 suma += d
+                if d < 0:
+                    suma_debe += -d
+                    num_debe += 1
+                elif d > 0:
+                    suma_haber += d
+                    num_haber += 1
             suma_q = suma.quantize(Decimal("0.01"))
+            debe_q = suma_debe.quantize(Decimal("0.01"))
+            haber_q = suma_haber.quantize(Decimal("0.01"))
 
         cab = res.cabecera or {}
         tr = res.trailer or {}
         inicial = cab.get("saldo_inicial")
         declarado = tr.get("saldo_final")
-        suma_declarada = tr.get("suma_debedores_acreedores")
-        num_decl = tr.get("num_movimientos_declarado")
+        decl_ndebe = tr.get("num_movimientos_debe")
+        decl_tdebe = tr.get("total_debe")
+        decl_nhaber = tr.get("num_movimientos_haber")
+        decl_thaber = tr.get("total_haber")
 
         res.saldos = {
             "num_movimientos": len(res.movimientos),
@@ -625,22 +673,43 @@ class N43Parser:
                 if inicial is not None
                 else float(suma_q)
             ),
+            "num_movimientos_debe": num_debe,
+            "total_debe": float(debe_q),
+            "num_movimientos_haber": num_haber,
+            "total_haber": float(haber_q),
         }
+        if decl_ndebe is not None:
+            res.saldos["num_movimientos_debe_declarado"] = decl_ndebe
+        if decl_tdebe is not None:
+            res.saldos["total_debe_declarado"] = decl_tdebe
+        if decl_nhaber is not None:
+            res.saldos["num_movimientos_haber_declarado"] = decl_nhaber
+        if decl_thaber is not None:
+            res.saldos["total_haber_declarado"] = decl_thaber
 
-        if num_decl is not None:
-            res.saldos["num_movimientos_declarado"] = num_decl
-            if num_decl != len(res.movimientos):
-                res.warnings.append(
-                    "El registro 33 declara %d movimientos y se han parseado %d"
-                    % (num_decl, len(res.movimientos))
-                )
-        if suma_declarada is not None:
-            res.saldos["suma_importes_declarada"] = suma_declarada
-            ds = (_to_decimal(suma_declarada) - suma_q).quantize(Decimal("0.01"))
-            if abs(ds) >= Decimal("0.01"):
+        if decl_ndebe is not None and decl_ndebe != num_debe:
+            res.warnings.append(
+                "El registro 33 declara %d movimientos al debe y se han "
+                "parseado %d" % (decl_ndebe, num_debe)
+            )
+        if decl_nhaber is not None and decl_nhaber != num_haber:
+            res.warnings.append(
+                "El registro 33 declara %d movimientos al haber y se han "
+                "parseado %d" % (decl_nhaber, num_haber)
+            )
+        if decl_tdebe is not None:
+            dd = (_to_decimal(decl_tdebe) - debe_q).quantize(Decimal("0.01"))
+            if abs(dd) >= Decimal("0.01"):
                 res.errores.append(
-                    "Descuadre en la suma de movimientos del registro 33: "
-                    "diferencia %s EUR" % ds
+                    "Descuadre en el total al debe del registro 33: "
+                    "diferencia %s EUR" % dd
+                )
+        if decl_thaber is not None:
+            dh = (_to_decimal(decl_thaber) - haber_q).quantize(Decimal("0.01"))
+            if abs(dh) >= Decimal("0.01"):
+                res.errores.append(
+                    "Descuadre en el total al haber del registro 33: "
+                    "diferencia %s EUR" % dh
                 )
 
         if declarado is not None:
@@ -684,6 +753,9 @@ class N43Parser:
             if li.record_hint == "MOV" and li.length < 30:
                 li.errors.append("Longitud movimiento < 30 (posible truncado)")
                 res.warnings.append("Línea %d: movimiento corto <30" % li.lineno)
+            if li.record_hint == "FINAL_CUENTA" and li.length < 73:
+                li.warnings.append("Longitud registro 33 < 73 (posible truncado)")
+                res.warnings.append("Línea %d: registro 33 corto <73" % li.lineno)
 
     # ------------------------- RESUMEN / EXPORTACIÓN -------------------------
 
