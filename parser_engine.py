@@ -109,6 +109,17 @@ def _to_decimal(val):
         return None
 
 
+def _fmt_eur(valor):
+    # type: (Any) -> str
+    """Formatea un importe en euros con convención española: '1.234,56 €'."""
+    cuant = _to_decimal(valor)
+    if cuant is None:
+        return "— €"
+    s = "{:,.2f}".format(cuant)  # p.ej. '1,234,567.89'
+    s = s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+    return s + " €"
+
+
 def _parse_date_ddmmyy(s):
     # type: (str) -> Optional[str]
     """Intenta parsear fecha AEB tipo DDMMYY a ISO 8601 YYYY-MM-DD."""
@@ -351,7 +362,9 @@ class N43Parser:
             res.errores.append("Error decodificando con %s: %s" % (enc_use, e))
             return res
 
-        if enc_use not in ("utf-8",):
+        # Solo consideramos "reparación" cuando la codificación NO es limpia:
+        # utf-8 y ascii decodifican sin pérdida, así que no son una reparación.
+        if enc_use not in ("utf-8", "ascii"):
             res.reparado.append("Decodificado con %s (fallback/conservador)" % enc_use)
 
         text_n, rep_n, warn_n = self._normalize_text(text)
@@ -707,7 +720,7 @@ class N43Parser:
             if abs(dd) >= Decimal("0.01"):
                 res.warnings.append(
                     "Descuadre en el total al debe del registro 33: "
-                    "diferencia %s EUR" % dd
+                    "diferencia %s" % _fmt_eur(dd)
                 )
                 incidencias.append("total_debe")
         if decl_thaber is not None:
@@ -715,7 +728,7 @@ class N43Parser:
             if abs(dh) >= Decimal("0.01"):
                 res.warnings.append(
                     "Descuadre en el total al haber del registro 33: "
-                    "diferencia %s EUR" % dh
+                    "diferencia %s" % _fmt_eur(dh)
                 )
                 incidencias.append("total_haber")
 
@@ -727,13 +740,13 @@ class N43Parser:
                 incidencias.append("saldo_final")
                 if inicial is not None:
                     res.warnings.append(
-                        "Descuadre de saldo detectado: diferencia %s EUR "
-                        "(saldo inicial + movimientos vs saldo final declarado)" % dif
+                        "Descuadre de saldo detectado: diferencia %s "
+                        "(saldo inicial + movimientos vs saldo final declarado)" % _fmt_eur(dif)
                     )
                 else:
                     res.warnings.append(
-                        "Descuadre de saldo detectado: diferencia %s EUR "
-                        "(suma movimientos vs saldo final declarado)" % dif
+                        "Descuadre de saldo detectado: diferencia %s "
+                        "(suma movimientos vs saldo final declarado)" % _fmt_eur(dif)
                     )
             else:
                 res.warnings.append(

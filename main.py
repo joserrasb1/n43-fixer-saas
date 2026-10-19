@@ -462,6 +462,13 @@ tailwind.config = {
         det.textContent = 'Descuadre vs. ' + eur(s.saldo_final_declarado_trailer) + ' declarado';
       }
       card.className = 'rounded-xl p-4 ring-1 ' + (Math.abs(d) < 0.01 ? 'bg-emerald-50 ring-emerald-100' : 'bg-red-50 ring-red-100');
+    } else if (s.cuadra === false) {
+      // El saldo final no se pudo leer, pero sí hay descuadres en el cierre
+      // (totales o contadores del registro 33): avisamos en ámbar.
+      cuadre.textContent = 'No cuadra';
+      cuadre.className = 'mt-1 text-2xl font-bold text-orange-600';
+      det.textContent = 'Saldo final ilegible · revisa los avisos';
+      card.className = 'rounded-xl p-4 ring-1 bg-orange-50 ring-orange-100';
     } else {
       cuadre.textContent = 'Sin dato';
       cuadre.className = 'mt-1 text-2xl font-bold text-slate-400';

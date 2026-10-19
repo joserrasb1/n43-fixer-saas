@@ -6,7 +6,7 @@ SaaS MVP para gestorías en España: sube ficheros bancarios **Norma 43 (AEB)** 
 2. **Reparar** automáticamente fallos de codificación/formato (UTF-8/Latin-1/CP1252, BOM, CRLF, tabuladores).
 3. **Convertir** a JSON / CSV / Excel listo para pre-asentamientos contables.
 
-Versión endurecida con saneado de entradas, límites estrictos, cabeceras de seguridad y suite de **119 tests** (cobertura 93%).
+Versión endurecida con saneado de entradas, límites estrictos, cabeceras de seguridad y suite de **120 tests** (cobertura 93%).
 
 ## Características de seguridad
 

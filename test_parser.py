@@ -487,6 +487,7 @@ def test_parse_con_descuadre(parser: N43Parser):
     res = parser._parse_text(_n43_estandar(descuadre=True), filename="descuadre.txt")
     assert res.ok is True
     assert "Descuadre de saldo detectado" in " ".join(res.warnings)
+    assert any("-1,25 €" in w for w in res.warnings)  # formato español
     assert not any("Descuadre" in e for e in res.errores)
     assert res.saldos["diferencia_saldo_final"] == -1.25
     assert res.saldos["cuadra"] is False
@@ -817,6 +818,20 @@ def test_parse_bytes_utf8_ok(parser: N43Parser):
     res = parser.parse_bytes(data, filename="utf8.txt")
     assert res.encoding_used is not None
     assert res.ok is True
+
+
+def test_parse_bytes_ascii_no_repair(parser: N43Parser):
+    """Un fichero ASCII limpio NO debe contarse como 'reparación' de codificación."""
+    txt = "\n".join(
+        [
+            "111234567890ABCDEFGHIJ1234567890",
+            "22010101234567890CONCEPTO ASCII        +10,00",
+            "900000000000000000000000000000000000000000000010,00",
+        ]
+    )
+    res = parser.parse_bytes(txt.encode("ascii"), filename="ascii.txt")
+    assert res.encoding_used in ("ascii", "utf-8")
+    assert not any("Decodificado con" in r for r in res.reparado)
 
 
 def test_parse_bytes_latin1(parser: N43Parser):
