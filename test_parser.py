@@ -548,6 +548,199 @@ def test_parse_trailer_ultimo_si_multiples(parser: N43Parser):
     assert res.trailer["linea"] == 4
 
 
+def test_legado_88_reconocido_como_trailer(parser: N43Parser):
+    """El registro 88 debe valer como fin de archivo/tráiler también en modo heurístico."""
+    txt = "\n".join(
+        [
+            "111234567890ABCDEFGHIJ1234567890",
+            "22010101234567890CONCEPTO A                +50,00",
+            "88" + " " * 78,
+        ]
+    )
+    res = parser._parse_text(txt, filename="legado88.txt")
+    assert res.resumen["tiene_trailer"] is True
+    assert "No se detecta registro FINAL/TOTALES" not in " ".join(res.warnings)
+
+
+# ============================ PARSER: ESTÁNDAR AEB 43 (POSICIONES FIJAS) ============================
+
+def _reg80(clave, campos):
+    # type: (str, list) -> str
+    """Construye un registro AEB 43 de exactamente 80 caracteres.
+
+    campos: lista de (posición_base_1, texto) según el estándar AEB 43.
+    """
+    l = [" "] * 80
+    for i, ch in enumerate(clave):
+        l[i] = ch
+    for pos, txt in campos:
+        for i, ch in enumerate(txt):
+            l[pos - 1 + i] = ch
+    return "".join(l)
+
+
+def _n43_estandar(descuadre=False, fin="99"):
+    # type: (bool, str) -> str
+    """Fichero AEB 43 estricto: saldo inicial 5.000,00 y 5 movimientos.
+
+    Movimientos: +2150,00 -875,25 -950,00 +3400,00 -12,50 = +3712,25
+    → saldo final debe cuadrar en 8712,25.
+    """
+    cab = _reg80("11", [
+        (3, "2100"), (7, "0418"), (11, "1234567890"), (21, "45"),
+        (23, "15092025"), (33, "2"), (34, "00000000500000"), (48, "EUR"),
+    ])
+
+    def mov(fecha, clave_dh, importe, doc):
+        return _reg80("22", [
+            (3, "01"), (5, fecha), (11, fecha[:4] + "20" + fecha[4:]),
+            (19, "02"), (21, "CONCEP"), (27, clave_dh), (28, importe), (42, doc),
+        ])
+
+    movs = [
+        mov("150925", "2", "00000000215000", "NOMINA1"),   # haber +2150,00
+        mov("100925", "1", "00000000087525", "IVA1"),      # debe   -875,25
+        mov("011025", "1", "00000000095000", "ALQ1"),      # debe   -950,00
+        mov("031025", "2", "00000000340000", "COB1"),      # haber +3400,00
+        mov("011025", "1", "00000000001250", "COM1"),      # debe    -12,50
+    ]
+    saldo_final = "00000000871100" if descuadre else "00000000871225"
+    fin_cuenta = _reg80("33", [
+        (3, "2100"), (7, "0418"), (11, "1234567890"),
+        (20, "00005"), (25, "2"), (26, "00000000371225"),
+        (40, "2"), (41, saldo_final),
+    ])
+    return "\n".join([cab] + movs + [fin_cuenta, _reg80(fin, [])])
+
+
+def test_estandar_modo_detectado_y_cuadre(parser: N43Parser):
+    res = parser._parse_text(_n43_estandar(), filename="estandar.txt")
+    assert res.modo == "estándar AEB 43"
+    assert res.ok is True
+    assert res.resumen["modo"] == "estándar AEB 43"
+    assert res.resumen["tiene_cabecera"] is True
+    assert res.resumen["tiene_trailer"] is True
+    assert len(res.movimientos) == 5
+    # Saldo inicial registro 11 (posición 34-47, signo '2' acreedor = positivo)
+    assert res.saldos["saldo_inicial_estimado"] == 5000.00
+    # Importes firmados según clave debe/haber (posición 27)
+    assert [m.importe for m in res.movimientos] == [
+        2150.00, -875.25, -950.00, 3400.00, -12.50,
+    ]
+    assert [m.signo for m in res.movimientos] == ["+", "-", "-", "+", "-"]
+    assert res.saldos["suma_importes"] == 3712.25
+    # Cuadre estricto: 5000 + 3712,25 = 8712,25 declarado en el registro 33
+    assert res.saldos["saldo_final_declarado_trailer"] == 8712.25
+    assert res.saldos["diferencia_saldo_final"] == 0.00
+    assert res.saldos["num_movimientos_declarado"] == 5
+    assert res.saldos["suma_importes_declarada"] == 3712.25
+
+
+def test_estandar_registro11_saldo_deudor(parser: N43Parser):
+    """Signo '1' en posición 33 del registro 11 → saldo inicial negativo."""
+    cab = _reg80("11", [
+        (3, "2100"), (7, "0418"), (11, "1234567890"), (21, "45"),
+        (23, "15092025"), (33, "1"), (34, "00000000010000"), (48, "EUR"),
+    ])
+    mov = _reg80("22", [
+        (3, "01"), (5, "150925"), (11, "15092025"),
+        (19, "02"), (21, "CONCEP"), (27, "2"), (28, "00000000050000"), (42, "TEST1"),
+    ])
+    fin = _reg80("99", [])
+    res = parser._parse_text("\n".join([cab, mov, fin]), filename="deudor.txt")
+    assert res.modo == "estándar AEB 43"
+    assert res.cabecera["registro"] == "11"
+    assert res.cabecera["clave_saldo"] == "1"
+    assert res.cabecera["saldo_inicial"] == -100.00
+    assert res.saldos["saldo_inicial_estimado"] == -100.00
+    assert res.cabecera["entidad"] == "2100"
+    assert res.cabecera["cuenta"] == "1234567890"
+    assert res.cabecera["fecha_apertura"] == "2025-09-15"
+
+
+def test_estandar_registro22_fechas_y_concepto(parser: N43Parser):
+    res = parser._parse_text(_n43_estandar(), filename="fechas22.txt")
+    m = res.movimientos[0]
+    assert m.fecha_operacion == "2025-09-15"   # posiciones 5-10 (DDMMAA)
+    assert m.fecha_valor == "2025-09-15"       # posiciones 11-18 (DDMMAAAA)
+    assert m.extra["clave_debe_haber"] == "2"
+    assert m.extra["clave_operacion"] == "01"
+    assert m.referencia == "NOMINA1"
+
+
+def test_estandar_descuadre_saldo(parser: N43Parser):
+    res = parser._parse_text(_n43_estandar(descuadre=True), filename="desc.txt")
+    assert res.modo == "estándar AEB 43"
+    assert res.ok is False
+    assert any("Descuadre de saldo detectado" in e for e in res.errores)
+    assert res.saldos["diferencia_saldo_final"] == -1.25
+
+
+def test_estandar_num_movimientos_declarado_no_coincide(parser: N43Parser):
+    lines = _n43_estandar().splitlines()
+    fin = lines[-2]  # registro 33 (penúltima línea)
+    lines[-2] = fin[:19] + "00003" + fin[24:]  # declara 3 movimientos
+    res = parser._parse_text("\n".join(lines), filename="nummov.txt")
+    assert res.saldos["num_movimientos_declarado"] == 3
+    assert any("declara 3 movimientos" in w for w in res.warnings)
+
+
+def test_estandar_linea_corta_se_rellena_a_80(parser: N43Parser):
+    """Líneas cortas se completan con espacios a la derecha (.ljust(80))
+    antes de parsear las posiciones absolutas."""
+    txt = "\n".join(l[:45] for l in _n43_estandar().splitlines())
+    res = parser._parse_text(txt, filename="corta80.txt")
+    assert res.modo == "estándar AEB 43"
+    for l in res.lineas:
+        assert len(l.normalized) == 80
+    assert [m.importe for m in res.movimientos] == [
+        2150.00, -875.25, -950.00, 3400.00, -12.50,
+    ]
+
+
+def test_estandar_linea_larga_se_recorta_a_80(parser: N43Parser):
+    """Líneas con basura más allá de la posición 80 se recortan exactamente a 80."""
+    txt = "\n".join(l + "XXTRASH" for l in _n43_estandar().splitlines())
+    res = parser._parse_text(txt, filename="larga80.txt")
+    assert res.modo == "estándar AEB 43"
+    assert res.ok is True
+    assert len(res.movimientos) == 5
+    assert res.saldos["diferencia_saldo_final"] == 0.00
+
+
+def test_estandar_fin_fichero_88(parser: N43Parser):
+    txt = _n43_estandar().replace(_reg80("99", []), _reg80("88", []))
+    res = parser._parse_text(txt, filename="fin88.txt")
+    assert res.modo == "estándar AEB 43"
+    assert res.resumen["tiene_trailer"] is True
+    assert res.trailer["fin_fichero"]["registro"] == "88"
+    assert res.ok is True
+
+
+def test_estandar_fin_fichero_99(parser: N43Parser):
+    res = parser._parse_text(_n43_estandar(), filename="fin99.txt")
+    assert res.resumen["tiene_trailer"] is True
+    assert res.trailer["fin_fichero"]["registro"] == "99"
+
+
+def test_estandar_parse_bytes_end_to_end(parser: N43Parser):
+    res = parser.parse_bytes(_n43_estandar().encode("utf-8"), filename="e2e.txt")
+    assert res.ok is True
+    assert res.modo == "estándar AEB 43"
+    assert res.saldos["diferencia_saldo_final"] == 0.00
+
+
+def test_no_repara_espacios_finales(parser: N43Parser):
+    """La Norma 43 requiere el relleno de espacios: NO se recortan ni se
+    reportan como reparación."""
+    txt = "111234567890ABCDEFGHIJ1234567890   \r\n22010101234567890A +50,00   \r\n900000000000000000000000000000000000000000000050,00   \r\n"
+    res = parser.parse_bytes(txt.encode("utf-8"), filename="espacios.txt")
+    assert not any("espacios finales" in r.lower() for r in res.reparado)
+    # Los espacios finales se conservan (raw intacto) y el análisis funciona
+    assert res.ok is True
+    assert res.saldos["suma_importes"] == 50.00
+
+
 # ============================ PARSER: LÍMITES / DoS ============================
 
 def test_parse_too_many_lines(parser: N43Parser):

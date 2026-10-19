@@ -2,16 +2,37 @@
 """
 parser_engine.py
 ----------------
-Motor determinista y seguro para ficheros Norma 43 (AEB).
+Motor determinista y seguro para ficheros Norma 43 (AEB 43).
 
-Mejoras de seguridad/resistencia:
-- Validación con security_utils
-- Límites: MAX_LINES, MAX_LINE_LEN
-- Normalización controlada
-- Extracción numérica estricta
-- Detección de líneas vacías excesivas
-- Prevención de DoS por líneas gigantes
-- Exportación con nombres/bytes controlados
+Dos modos de parseo, detectados automáticamente:
+
+1. ESTÁNDAR AEB 43 (posiciones fijas):
+   - Cada línea se normaliza a EXACTAMENTE 80 caracteres:
+     * si es más corta -> se completa con espacios a la derecha (.ljust(80))
+     * si es más larga  -> se recorta a los primeros 80 (linea[:80])
+   - Registro 11 (cabecera de fichero): saldo inicial en posiciones 34-47
+     (14 dígitos, 2 decimales) y su signo en posición 33 ('1' deudor = negativo,
+     '2' acreedor = positivo).
+   - Registro 22 (movimiento): fecha de operación en posiciones 5-10 (DDMMAA),
+     clave de debe/haber en posición 27 ('1' = debe = negativo/gasto,
+     '2' = haber = positivo/ingreso) e importe en posiciones 28-41
+     (14 dígitos, los 2 últimos son decimales).
+   - Registro 33 (final de cuenta): número de movimientos declarados en
+     posiciones 20-24, suma de debedores/acreedores y saldo final para
+     verificar el cuadre.
+   - Registro 88/99 (fin de archivo): reconocidos como tráiler de cierre
+     (tiene_trailer = true).
+
+2. HEURÍSTICO (fallback): para ficheros no estándar o con estructura parcial
+   se mantiene el análisis orientativo por primer carácter (1/2/9) y patrones
+   numéricos.
+
+Notas de seguridad/robustez (igual que versiones anteriores):
+- Validación con security_utils (filename, contenido, texto)
+- Límites: MAX_LINES, MAX_LINE_LEN, MAX_UPLOAD_BYTES
+- Detección de payload malicioso antes de parsear
+- Sin "reparación" de espacios finales: la Norma 43 REQUIERE el relleno de
+  espacios hasta 80 caracteres, así que se conservan y se completa/recorta.
 """
 
 from __future__ import annotations
@@ -45,6 +66,9 @@ from security_utils import (
 )
 
 # ----------------------------- UTILIDADES -----------------------------
+
+# Longitud fija de los registros Norma 43 (AEB)
+LON_ESTRUCTURA = 80
 
 NUMERIC_CLEAN_RE = re.compile(r"[^0-9+\-\.]")
 DATE_DDMMYY_RE = re.compile(r"^\d{6}$")
@@ -100,11 +124,11 @@ def _parse_date_ddmmyy(s):
 @dataclass
 class LineInfo:
     """Información por línea cruda"""
-    raw: str
-    normalized: str
+    raw: str                       # línea original (sin tocar)
+    normalized: str                # línea normalizada a 80 posiciones (estándar AEB)
     lineno: int
-    length: int
-    record_hint: Optional[str] = None  # HEADER|MOV|TRAILER|OTHER|EMPTY
+    length: int                    # longitud ORIGINAL de la línea
+    record_hint: Optional[str] = None  # HEADER|MOV|TRAILER|FINAL_CUENTA|OTHER|EMPTY
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
@@ -132,6 +156,7 @@ class ParseResult:
     ok: bool
     filename: Optional[str] = None
     filename_safe: Optional[str] = None
+    modo: str = "heurístico"       # "estándar AEB 43" | "heurístico"
     encoding_detected: Optional[str] = None
     encoding_used: Optional[str] = None
     reparado: List[str] = field(default_factory=list)
@@ -152,16 +177,79 @@ class N43Parser:
     """
     Parser determinista para ficheros Norma 43 AEB.
 
-    Estructura orientativa:
-    - Registro cabecera: suele empezar por '1'
-    - Registros de movimiento: suelen empezar por '2'
-    - Registro final/totales: suele empezar por '9'
+    Estructura AEB 43 (posiciones fijas, 80 caracteres por línea):
+    - 11: cabecera de fichero (saldo inicial pos. 34-47, signo pos. 33)
+    - 22: movimiento (fecha pos. 5-10, debe/haber pos. 27, importe pos. 28-41)
+    - 33: final de cuenta (nº movimientos pos. 20-24, sumas y saldo final)
+    - 88/99: fin de archivo (tráiler de cierre)
+
+    Ficheros que no cumplen el estándar se analizan con un heurístico
+    conservador por primer carácter (1/2/9) y patrones numéricos.
     """
 
     def __init__(self, filename=None):
         # type: (Optional[str]) -> None
         self.filename = filename
         self.filename_safe = secure_filename(filename)
+
+    # ------------------------- DETECCIÓN DE MODO -------------------------
+
+    def _detectar_modo_estandar(self, res):
+        # type: (ParseResult) -> bool
+        """Detecta si el fichero cumple el formato de posiciones fijas AEB 43.
+
+        Criterio: existe al menos un registro 11 (cabecera de fichero) y algún
+        registro 22 cuyo campo de importe (posiciones 28-41) contenga 14 dígitos.
+        Los ficheros heurísticos de pruebas/no estándar no cumplen esto y
+        quedan en modo fallback.
+        """
+        lineas = [l.normalized for l in res.lineas]
+        if not any(l.startswith("11") for l in lineas):
+            return False
+        movs = [l for l in lineas if l.startswith("22")]
+        if not movs:
+            return False
+        for m in movs:
+            campo = m[27:41]  # posiciones 28-41 (14 dígitos)
+            if len(campo) == 14 and campo.isdigit():
+                return True
+        return False
+
+    # ------------------------- CAMPOS DE POSICIÓN FIJA -------------------------
+
+    @staticmethod
+    def _campo_importe(campo):
+        # type: (str) -> Optional[Decimal]
+        """Convierte un campo numérico de 14 dígitos (2 decimales implícitos) a Decimal.
+
+        Acepta espacios de relleno a la izquierda; devuelve None si no son
+        todos dígitos.
+        """
+        s = campo.replace(" ", "")
+        if not s or not s.isdigit():
+            return None
+        with localcontext() as ctx:
+            ctx.prec = 200
+            try:
+                return (Decimal(s) / Decimal(100)).quantize(Decimal("0.01"))
+            except (InvalidOperation, ValueError):
+                return None
+
+    @staticmethod
+    def _fecha_estandar(campo):
+        # type: (str) -> Optional[str]
+        """Parsea un campo de fecha AEB: DDMMAAAA (8) o DDMMAA (6) -> ISO."""
+        s = campo.strip()
+        if len(s) == 8 and s.isdigit():
+            try:
+                return datetime(int(s[4:8]), int(s[2:4]), int(s[0:2])).strftime("%Y-%m-%d")
+            except ValueError:
+                return None
+        if len(s) == 6:
+            return _parse_date_ddmmyy(s)
+        return None
+
+    # ------------------------- NORMALIZACIÓN / BYTES -------------------------
 
     def _detect_encoding(self, data):
         # type: (bytes) -> Tuple[Optional[str], str]
@@ -191,7 +279,13 @@ class N43Parser:
 
     def _normalize_text(self, text):
         # type: (str) -> Tuple[str, List[str], List[str]]
-        """Normaliza saltos de línea, espacios y caracteres problemáticos menores."""
+        """Normaliza saltos de línea y caracteres de control.
+
+        NOTA: NO se recortan ni alteran los espacios finales de cada línea:
+        la Norma 43 exige el relleno con espacios hasta 80 caracteres. El
+        ajuste exacto a 80 posiciones (relleno/recorte) se aplica después,
+        por línea, en _parse_text.
+        """
         reparado = []  # type: List[str]
         warnings = []  # type: List[str]
         if "\r\n" in text:
@@ -208,20 +302,15 @@ class N43Parser:
         if "\t" in text2:
             text2 = text2.replace("\t", " ")
             reparado.append("Sustituidos tabuladores por espacios")
-        # Colapsar espacios y caracteres de control restantes
-        text2 = re.sub(r"[ \x00-\x08\x0B\x0C\x0E-\x1F\x7F]+", " ", text2)
+        # Sustituye caracteres de control individuales por espacio, SIN alterar
+        # las carreras de espacios de relleno (posiciones fijas del estándar)
+        text2 = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ", text2)
         lines_fixed = []  # type: List[str]
-        changed_trim = False
         for l in text2.splitlines():
-            nl = l.rstrip()
-            if len(nl) > MAX_LINE_LEN:
-                nl = nl[:MAX_LINE_LEN]
+            if len(l) > MAX_LINE_LEN:
+                l = l[:MAX_LINE_LEN]
                 warnings.append("Línea truncada por exceder MAX_LINE_LEN en normalización")
-            if nl != l.rstrip("\n\r"):
-                changed_trim = True
-            lines_fixed.append(nl)
-        if changed_trim:
-            reparado.append("Recortados espacios finales por línea")
+            lines_fixed.append(l)
         text3 = "\n".join(lines_fixed)
         if len(text3.strip()) == 0:
             warnings.append("Fichero vacío tras normalización")
@@ -284,7 +373,11 @@ class N43Parser:
 
     def _parse_text(self, text, filename=None, res=None):
         # type: (str, Optional[str], Optional[ParseResult]) -> ParseResult
-        """Parsea texto ya normalizado (usado directamente por tests unitarios)."""
+        """Parsea texto ya normalizado (usado directamente por tests unitarios).
+
+        Normaliza cada línea a 80 posiciones (rellena con espacios a la derecha
+        o recorta a 80) antes de analizar posiciones absolutas del estándar.
+        """
         fn = filename or self.filename
         if res is None:
             res = ParseResult(ok=False, filename=fn, filename_safe=secure_filename(fn))
@@ -302,18 +395,30 @@ class N43Parser:
         for i, rl in enumerate(raw_lines, 1):
             if rl.strip() == "":
                 empty_cnt += 1
-            li = LineInfo(raw=rl, normalized=rl, lineno=i, length=len(rl))
+            # Normalización a 80 posiciones: rellena a la derecha o recorta
+            norm = rl.ljust(LON_ESTRUCTURA)[:LON_ESTRUCTURA]
+            li = LineInfo(raw=rl, normalized=norm, lineno=i, length=len(rl))
             res.lineas.append(li)
         if empty_cnt > len(res.lineas) * 0.8:
             res.warnings.append("Más del 80% de líneas parecen vacías tras normalización")
         self._infer_record_types(res)
-        self._extract_header_trailer(res)
-        self._extract_movements(res)
+        if self._detectar_modo_estandar(res):
+            res.modo = "estándar AEB 43"
+            self._extract_cabecera_estandar(res)
+            self._extract_movimientos_estandar(res)
+            self._extract_final_estandar(res)
+            self._validate_balances_estandar(res)
+        else:
+            res.modo = "heurístico"
+            self._extract_header_trailer(res)
+            self._extract_movements(res)
+            self._validate_balances(res)
         self._validate_lengths(res)
-        self._validate_balances(res)
         self._build_summary(res)
         res.ok = len(res.errores) == 0
         return res
+
+    # ------------------------- INFERENCIA DE REGISTROS -------------------------
 
     def _infer_record_types(self, res):
         # type: (ParseResult) -> None
@@ -327,13 +432,233 @@ class N43Parser:
                 li.record_hint = "HEADER"
             elif c0 == "2":
                 li.record_hint = "MOV"
-            elif c0 == "9":
+            elif s.startswith("33"):
+                # Final de cuenta (estándar AEB 43)
+                li.record_hint = "FINAL_CUENTA"
+            elif c0 in ("8", "9"):
+                # Fin de archivo / tráiler de cierre (88, 99 o 9)
                 li.record_hint = "TRAILER"
             else:
                 li.record_hint = "OTHER"
                 li.warnings.append(
-                    "Carácter inicial no estándar Norma 43 (esperado 1/2/9)"
+                    "Carácter inicial no estándar Norma 43 (esperado 1/2/3/8/9)"
                 )
+
+    # ------------------------- MODO ESTÁNDAR AEB 43 -------------------------
+
+    def _extract_cabecera_estandar(self, res):
+        # type: (ParseResult) -> None
+        """Registro 11: cabecera de fichero con saldo inicial (pos. 34-47)
+        y su signo en posición 33 ('1' deudor = negativo, '2' acreedor = positivo)."""
+        cab = [l for l in res.lineas if l.normalized.startswith("11")]
+        if not cab:
+            res.errores.append("Falta registro de CABECERA (tipo 11)")
+            return
+        if len(cab) > 1:
+            res.warnings.append(
+                "Se detectan %d registros tipo 11: se usa el primero" % len(cab)
+            )
+        li = cab[0]
+        l = li.normalized
+        clave_saldo = l[32:33]
+        saldo_dec = self._campo_importe(l[33:47])
+        mult = None
+        if clave_saldo == "1":
+            mult = Decimal("-1")
+        elif clave_saldo == "2":
+            mult = Decimal("1")
+        else:
+            res.warnings.append(
+                "Registro 11: clave de saldo inicial %r no válida (esperada 1 o 2)"
+                % clave_saldo
+            )
+        saldo_inicial = None
+        if saldo_dec is not None:
+            saldo_inicial = float(saldo_dec * (mult if mult is not None else Decimal("1")))
+        else:
+            res.warnings.append(
+                "Registro 11: saldo inicial no identificable en posiciones 34-47"
+            )
+        res.cabecera = {
+            "linea": li.lineno,
+            "registro": "11",
+            "entidad": l[2:6].strip(),
+            "oficina": l[6:10].strip(),
+            "cuenta": l[10:20].strip(),
+            "digitos_control": l[20:22].strip(),
+            "fecha_apertura": self._fecha_estandar(l[22:30]),
+            "clave_saldo": clave_saldo,
+            "saldo_inicial": saldo_inicial,
+            "divisa": l[47:50].strip(),
+            "longitud": li.length,
+        }
+
+    def _extract_movimientos_estandar(self, res):
+        # type: (ParseResult) -> None
+        """Registro 22: fecha (pos. 5-10), clave debe/haber (pos. 27,
+        '1' = negativo/gasto, '2' = positivo/ingreso) e importe (pos. 28-41,
+        14 dígitos con 2 decimales implícitos)."""
+        movs = [l for l in res.lineas if l.normalized.startswith("22")]
+        if not movs:
+            res.warnings.append("No se detectan registros de MOVIMIENTO (tipo 22)")
+        for ml in movs:
+            l = ml.normalized
+            m = Movement(linea=ml.lineno)
+            m.fecha_operacion = _parse_date_ddmmyy(l[4:10])
+            m.fecha_valor = self._fecha_estandar(l[10:18])
+            m.concepto = l[18:26].strip() or None
+            clave_op = l[2:4].strip()
+            clave_dh = l[26:27]
+            importe = self._campo_importe(l[27:41])
+            mult = None
+            if clave_dh == "1":
+                mult = Decimal("-1")   # debe: negativo / gasto
+            elif clave_dh == "2":
+                mult = Decimal("1")    # haber: positivo / ingreso
+            else:
+                res.warnings.append(
+                    "Línea %d: clave de debe/haber %r no válida en registro 22 "
+                    "(esperada 1 o 2)" % (ml.lineno, clave_dh)
+                )
+            if importe is not None:
+                valor = importe * (mult if mult is not None else Decimal("1"))
+                m.importe = float(valor)
+                m.signo = "-" if valor < 0 else "+"
+            else:
+                res.warnings.append(
+                    "Línea %d: importe no identificable para cuadratura" % ml.lineno
+                )
+            m.referencia = l[41:54].strip() or None
+            m.extra = {"clave_operacion": clave_op, "clave_debe_haber": clave_dh}
+            res.movimientos.append(m)
+
+    def _extract_final_estandar(self, res):
+        # type: (ParseResult) -> None
+        """Registro 33 (final de cuenta): nº de movimientos (pos. 20-24),
+        suma de debedores/acreedores y saldo final. Registro 88/99: fin de
+        archivo, reconocido como tráiler de cierre."""
+        fin_cuenta = [l for l in res.lineas if l.record_hint == "FINAL_CUENTA"]
+        fin_fichero = [l for l in res.lineas if l.record_hint == "TRAILER"]
+        if not fin_cuenta:
+            res.warnings.append(
+                "No se detecta registro FINAL DE CUENTA (tipo 33). "
+                "No se podrá verificar el cuadre contra saldos declarados"
+            )
+        elif len(fin_cuenta) > 1:
+            res.warnings.append(
+                "Se detectan %d registros tipo 33: se usa el último" % len(fin_cuenta)
+            )
+        if fin_cuenta:
+            li = fin_cuenta[-1]
+            l = li.normalized
+            num_decl = l[19:24].strip()          # posiciones 20-24
+            suma_decl = self._campo_importe(l[25:39])
+            saldo_decl = self._campo_importe(l[40:54])
+            if saldo_decl is None:
+                # Fallback conservador: último importe detectable de la línea
+                nums = AMOUNT_RE.findall(l)
+                if nums:
+                    cand = _to_decimal(nums[-1])
+                    if cand is not None:
+                        saldo_decl = cand
+                        res.warnings.append(
+                            "Registro 33: saldo final leído por fallback "
+                            "(posiciones no estándar)"
+                        )
+            res.trailer = {
+                "linea": li.lineno,
+                "registro": "33",
+                "num_movimientos_declarado": int(num_decl) if num_decl.isdigit() else None,
+                "suma_debedores_acreedores": (
+                    float(suma_decl) if suma_decl is not None else None
+                ),
+                "saldo_final": float(saldo_decl) if saldo_decl is not None else None,
+                "longitud": li.length,
+            }
+        if fin_fichero:
+            li = fin_fichero[-1]
+            if not res.trailer:
+                res.trailer = {}
+            res.trailer["fin_fichero"] = {
+                "linea": li.lineno,
+                "registro": li.normalized[:2],
+            }
+
+    def _validate_balances_estandar(self, res):
+        # type: (ParseResult) -> None
+        """Cuadre estricto AEB: saldo inicial (reg. 11) + movimientos (reg. 22)
+        = saldo final declarado (reg. 33); además se contrastan la suma de
+        importes y el número de movimientos declarados."""
+        with localcontext() as ctx:
+            ctx.prec = 200
+            suma = Decimal("0.00")
+            for m in res.movimientos:
+                d = _to_decimal(m.importe) if m.importe is not None else None
+                if d is None:
+                    continue
+                suma += d
+            suma_q = suma.quantize(Decimal("0.01"))
+
+        cab = res.cabecera or {}
+        tr = res.trailer or {}
+        inicial = cab.get("saldo_inicial")
+        declarado = tr.get("saldo_final")
+        suma_declarada = tr.get("suma_debedores_acreedores")
+        num_decl = tr.get("num_movimientos_declarado")
+
+        res.saldos = {
+            "num_movimientos": len(res.movimientos),
+            "suma_importes": float(suma_q),
+            "saldo_inicial_estimado": inicial if inicial is not None else 0.0,
+            "saldo_final_declarado_trailer": declarado,
+            "saldo_final_estimado": (
+                float((_to_decimal(inicial) + suma_q).quantize(Decimal("0.01")))
+                if inicial is not None
+                else float(suma_q)
+            ),
+        }
+
+        if num_decl is not None:
+            res.saldos["num_movimientos_declarado"] = num_decl
+            if num_decl != len(res.movimientos):
+                res.warnings.append(
+                    "El registro 33 declara %d movimientos y se han parseado %d"
+                    % (num_decl, len(res.movimientos))
+                )
+        if suma_declarada is not None:
+            res.saldos["suma_importes_declarada"] = suma_declarada
+            ds = (_to_decimal(suma_declarada) - suma_q).quantize(Decimal("0.01"))
+            if abs(ds) >= Decimal("0.01"):
+                res.errores.append(
+                    "Descuadre en la suma de movimientos del registro 33: "
+                    "diferencia %s EUR" % ds
+                )
+
+        if declarado is not None:
+            base = _to_decimal(inicial) if inicial is not None else Decimal("0.00")
+            dif = (_to_decimal(declarado) - (base + suma_q)).quantize(Decimal("0.01"))
+            res.saldos["diferencia_saldo_final"] = float(dif)
+            if abs(dif) >= Decimal("0.01"):
+                if inicial is not None:
+                    res.errores.append(
+                        "Descuadre de saldo detectado: diferencia %s EUR "
+                        "(saldo inicial + movimientos vs saldo final declarado)" % dif
+                    )
+                else:
+                    res.errores.append(
+                        "Descuadre de saldo detectado: diferencia %s EUR "
+                        "(suma movimientos vs saldo final declarado)" % dif
+                    )
+            else:
+                res.warnings.append(
+                    "Saldos cuadran con el registro 33 (estándar AEB 43)"
+                )
+        else:
+            res.warnings.append(
+                "Registro 33 sin saldo final legible: no se pudo contrastar cuadre"
+            )
+
+    # ------------------------- MODO HEURÍSTICO (FALLBACK) -------------------------
 
     def _extract_header_trailer(self, res):
         # type: (ParseResult) -> None
@@ -464,14 +789,19 @@ class N43Parser:
                 "Trailer sin importes detectables: no se pudo contrastar saldo final"
             )
 
+    # ------------------------- RESUMEN / EXPORTACIÓN -------------------------
+
     def _build_summary(self, res):
         # type: (ParseResult) -> None
         res.resumen = {
+            "modo": res.modo,
             "total_lineas": len(res.lineas),
             "lineas_movimiento": len([l for l in res.lineas if l.record_hint == "MOV"]),
             "lineas_vacias": len([l for l in res.lineas if l.record_hint == "EMPTY"]),
             "tiene_cabecera": any(l.record_hint == "HEADER" for l in res.lineas),
-            "tiene_trailer": any(l.record_hint == "TRAILER" for l in res.lineas),
+            "tiene_trailer": any(
+                l.record_hint in ("TRAILER", "FINAL_CUENTA") for l in res.lineas
+            ),
             "con_errores": len(res.errores) > 0,
             "num_errores": len(res.errores),
             "num_warnings": len(res.warnings),
