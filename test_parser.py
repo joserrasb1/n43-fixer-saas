@@ -328,15 +328,17 @@ def _reg80(clave, campos):
     return "".join(l)
 
 
-def _cab(entidad="2100", oficina="0418", cuenta="1234567890", fecha="150925",
-         clave="2", saldo="00000000500000", divisa="EUR"):
-    # type: (str, str, str, str, str, str, str) -> str
-    """Registro 11 (cabecera): entidad 2:6, oficina 6:10, cuenta 10:20,
-    fecha apertura 21:27 (DDMMAA), clave de saldo en el índice 27, saldo
-    inicial de 14 dígitos en 28:42 y divisa en 42:45."""
+def _cab(entidad="2100", oficina="0418", cuenta="1234567890", fecha="250915",
+         fecha_final=None, clave="2", saldo="00000000500000", divisa="EUR"):
+    # type: (str, str, str, str, str, str, str, str) -> str
+    """Registro 11 (cabecera de cuenta): entidad 2:6, oficina 6:10, cuenta
+    10:20, fecha inicial 20:26 (AAMMDD), fecha final 26:32 (AAMMDD), clave de
+    saldo en el índice 32, saldo inicial de 14 dígitos en 33:47 y divisa en
+    47:50."""
     return _reg80("11", [
         (3, entidad), (7, oficina), (11, cuenta),
-        (22, fecha), (28, clave), (29, saldo), (43, divisa),
+        (21, fecha), (27, fecha_final or fecha), (33, clave),
+        (34, saldo), (48, divisa),
     ])
 
 
@@ -354,14 +356,14 @@ def _mov(fecha_op="250915", fecha_valor="250917", clave_dh="2",
 
 def _reg33(num_debe="00000", total_debe="00000000000000",
            num_haber="00000", total_haber="00000000000000",
-           clave="2", saldo="00000000000000"):
-    # type: (str, str, str, str, str, str) -> str
-    """Registro 33 (final de cuenta): núm. movs debe 19:24, total debe 24:38,
-    núm. movs haber 38:43, total haber 43:57, clave de saldo final en el
-    índice 57 y saldo final de 14 dígitos en 58:72."""
+           clave="2", saldo="00000000000000", divisa="EUR"):
+    # type: (str, str, str, str, str, str, str) -> str
+    """Registro 33 (final de cuenta): núm. movs debe 20:25, total debe 25:39,
+    núm. movs haber 39:44, total haber 44:58, clave de saldo final en el
+    índice 58, saldo final de 14 dígitos en 59:73 y divisa en 73:76."""
     return _reg80("33", [
-        (20, num_debe), (25, total_debe), (39, num_haber),
-        (44, total_haber), (58, clave), (59, saldo),
+        (21, num_debe), (26, total_debe), (40, num_haber),
+        (45, total_haber), (59, clave), (60, saldo), (74, divisa),
     ])
 
 
@@ -572,7 +574,7 @@ def test_parse_importe_no_identificable(parser: N43Parser):
 
 
 def test_parse_reg33_sin_saldo_legible(parser: N43Parser):
-    """Sin fallback heurístico: si 58:72 no es numérico se avisa y no se inventa."""
+    """Sin fallback heurístico: si 59:73 no es numérico se avisa y no se inventa."""
     txt = "\n".join([
         _cab(saldo="00000000000000"),
         _mov("251001", "251003", "2", "00000000010000"),
@@ -623,7 +625,7 @@ def test_estandar_cuadre_completo(parser: N43Parser):
     assert res.resumen["tiene_cabecera"] is True
     assert res.resumen["tiene_trailer"] is True
     assert len(res.movimientos) == 5
-    # Saldo inicial registro 11 (índices 28:42, clave '2' acreedor = positivo)
+    # Saldo inicial registro 11 (índices 33:47, clave '2' acreedor = positivo)
     assert res.saldos["saldo_inicial_estimado"] == 5000.00
     # Importes firmados según clave debe/haber (índice 27)
     assert [m.importe for m in res.movimientos] == [
@@ -634,12 +636,12 @@ def test_estandar_cuadre_completo(parser: N43Parser):
     # Cuadre estricto: 5000 + 3712,25 = 8712,25 declarado en el registro 33
     assert res.saldos["saldo_final_declarado_trailer"] == 8712.25
     assert res.saldos["diferencia_saldo_final"] == 0.00
-    # Registro 33: contadores y totales al debe/haber (índices 19:24 ... 43:57)
+    # Registro 33: contadores y totales al debe/haber (índices 20:25 ... 44:58)
     assert res.trailer["num_movimientos_debe"] == 3
     assert res.trailer["total_debe"] == 1837.75
     assert res.trailer["num_movimientos_haber"] == 2
     assert res.trailer["total_haber"] == 5550.00
-    # Clave de saldo final (índice 57) y saldo final (58:72)
+    # Clave de saldo final (índice 58) y saldo final (59:73)
     assert res.trailer["clave_saldo_final"] == "2"
     assert res.trailer["saldo_final"] == 8712.25
 
@@ -655,7 +657,7 @@ def test_estandar_registro22_signo_cero_advertencia(parser: N43Parser):
 
 
 def test_estandar_registro11_saldo_deudor(parser: N43Parser):
-    """Clave '1' en el índice 27 del registro 11 → saldo inicial negativo."""
+    """Clave '1' en el índice 32 del registro 11 → saldo inicial negativo."""
     cab = _cab(clave="1", saldo="00000000010000")   # -100,00 (14 dígitos)
     mov = _mov("250915", "250917", "2", "00000000050000", "TEST1")
     fin = _reg80("99", [])
@@ -667,7 +669,8 @@ def test_estandar_registro11_saldo_deudor(parser: N43Parser):
     assert res.saldos["saldo_inicial_estimado"] == -100.00
     assert res.cabecera["entidad"] == "2100"
     assert res.cabecera["cuenta"] == "1234567890"
-    assert res.cabecera["fecha_apertura"] == "2025-09-15"
+    assert res.cabecera["fecha_inicial"] == "2025-09-15"
+    assert res.cabecera["fecha_final"] == "2025-09-15"
 
 
 def test_estandar_registro22_fechas_y_concepto(parser: N43Parser):

@@ -606,12 +606,6 @@ async def health() -> JSONResponse:
     )
 
 
-@app.get("/health")
-async def health() -> JSONResponse:
-    """Health check ligero para monitores y sondas de despliegue (Render, UptimeRobot...)."""
-    return JSONResponse(content={"status": "ok", "service": "n43-fixer", "version": "1.1.0-secure"})
-
-
 @app.post("/api/parse-n43")
 async def parse_n43(file: UploadFile = File(...)) -> JSONResponse:
     """Recibe fichero bancario (.txt/.n43), valida, repara y devuelve resumen JSON."""

@@ -57,10 +57,11 @@ def n43_estandar(descuadre=False, acentos=False):
     (o se descuadra deliberadamente si descuadre=True)."""
     cab = reg80("11", [
         (3, "2100"), (7, "0418"), (11, "1234567890"),
-        (22, "150925"),              # fecha apertura DDMMAA (índices 21:27)
-        (28, "2"),                   # clave saldo inicial (índice 27)
-        (29, "00000000500000"),      # saldo inicial 14 dígitos (índices 28:42)
-        (43, "EUR"),                 # divisa (índices 42:45, fuera del saldo)
+        (21, "250915"),              # fecha inicial AAMMDD (índices 20:26)
+        (27, "250915"),              # fecha final AAMMDD (índices 26:32)
+        (33, "2"),                   # clave saldo inicial (índice 32)
+        (34, "00000000500000"),      # saldo inicial 14 dígitos (índices 33:47)
+        (48, "EUR"),                 # divisa (índices 47:50, fuera del saldo)
     ])
     if acentos:
         # Conceptos con acentos y eñe (para demostrar la reparación CP1252)
@@ -81,12 +82,13 @@ def n43_estandar(descuadre=False, acentos=False):
         ]
     saldo_final = "00000000871100" if descuadre else "00000000871225"
     fin_cuenta = reg80("33", [
-        (20, "00003"),               # núm. movimientos al debe (índices 19:24)
-        (25, "00000000183775"),      # total debe (índices 24:38) = 1.837,75
-        (39, "00002"),               # núm. movimientos al haber (índices 38:43)
-        (44, "00000000555000"),      # total haber (índices 43:57) = 5.550,00
-        (58, "2"),                   # clave saldo final (índice 57)
-        (59, saldo_final),           # saldo final 14 dígitos (índices 58:72)
+        (21, "00003"),               # núm. movimientos al debe (índices 20:25)
+        (26, "00000000183775"),      # total debe (índices 25:39) = 1.837,75
+        (40, "00002"),               # núm. movimientos al haber (índices 39:44)
+        (45, "00000000555000"),      # total haber (índices 44:58) = 5.550,00
+        (59, "2"),                   # clave saldo final (índice 58)
+        (60, saldo_final),           # saldo final 14 dígitos (índices 59:73)
+        (74, "EUR"),                 # divisa (índices 73:76)
     ])
     return [cab] + movs + [fin_cuenta, reg80("99", [])]
 
