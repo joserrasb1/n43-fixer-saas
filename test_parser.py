@@ -787,6 +787,26 @@ def test_api_index(client):
     assert "Norma 43" in r.text
 
 
+def test_api_health(client):
+    """El health check debe responder 200 con estado ok para las sondas de Render."""
+    r = client.get("/health")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "ok"
+    assert data["service"] == "n43-fixer"
+
+
+def test_api_no_coep_blocks_external_assets(client):
+    """COEP require-corp bloqueaba el script de Tailwind (sin cabecera CORP en el CDN),
+    dejando la página sin estilos. Regresión: la cabecera no debe volver."""
+    r = client.get("/")
+    assert r.headers.get("Cross-Origin-Embedder-Policy") is None
+    # Y el CSP debe seguir permitiendo el CDN de Tailwind y sus estilos inline
+    csp = r.headers.get("Content-Security-Policy", "")
+    assert "https://cdn.tailwindcss.com" in csp
+    assert "style-src" in csp and "'unsafe-inline'" in csp
+
+
 def test_api_security_headers(client):
     r = client.get("/")
     assert r.headers.get("X-Content-Type-Options") == "nosniff"

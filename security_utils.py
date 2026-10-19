@@ -264,5 +264,7 @@ def secure_http_headers():
         ),
         ("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload"),
         ("Cross-Origin-Resource-Policy", "same-origin"),
-        ("Cross-Origin-Embedder-Policy", "require-corp"),
+        # NOTA: no se envía Cross-Origin-Embedder-Policy: require-corp porque
+        # bloquea recursos cross-origin sin cabecera CORP (p. ej. el script de
+        # Tailwind en cdn.tailwindcss.com), dejando la página sin estilos.
     ]
