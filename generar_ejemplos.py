@@ -72,11 +72,15 @@ def reg80(clave, campos):
 
 def mov_std(fecha, clave_dh, importe, doc):
     # type: (str, str, str, str) -> str
-    """Registro 22 estándar: fecha pos. 5-10, debe/haber pos. 27 ('1' negativo,
-    '2' positivo), importe pos. 28-41 (14 dígitos, 2 decimales implícitos)."""
+    """Registro 22 estándar: fecha índices 4:10, debe/haber índice 21 ('1'
+    cargo = negativo, '2' abono = positivo), importe índices 22:36
+    (14 dígitos, 2 decimales implícitos)."""
     return reg80("22", [
         (3, "2100"), (5, fecha), (11, fecha[:4] + "20" + fecha[4:]),
-        (19, "02"), (21, "CONCEP"), (27, clave_dh), (28, importe), (42, doc),
+        (19, "02"),              # concepto común (índices 18:20)
+        (22, clave_dh),          # debe/haber (índice 21)
+        (23, importe),           # importe (índices 22:36)
+        (42, doc),               # referencia (índices 41:54)
     ])
 
 
@@ -86,21 +90,29 @@ def n43_estandar(descuadre=False):
     5 movimientos; el saldo final declarado en el registro 33 cuadra en 8.712,25
     (o se descuadra deliberadamente si descuadre=True)."""
     cab = reg80("11", [
-        (3, "2100"), (7, "0418"), (11, "1234567890"), (21, "45"),
-        (23, "15092025"), (33, "2"), (34, "00000000500000"), (48, "EUR"),
+        (3, "2100"), (7, "0418"), (11, "1234567890"),
+        (21, "150925"),              # fecha apertura DDMMAA (índices 20:26)
+        (27, "2"),                   # clave saldo inicial (índice 26)
+        (28, "00000000500000"),      # saldo inicial (índices 27:41)
+        (42, "EUR"),                 # divisa (índices 41:44)
     ])
     movs = [
-        mov_std("150925", "2", "00000000215000", "NOMINA1"),   # haber +2150,00
-        mov_std("100925", "1", "00000000087525", "IVA1"),      # debe    -875,25
-        mov_std("011025", "1", "00000000095000", "ALQ1"),      # debe    -950,00
-        mov_std("031025", "2", "00000000340000", "COB1"),      # haber +3400,00
-        mov_std("011025", "1", "00000000001250", "COM1"),      # debe     -12,50
+        mov_std("150925", "2", "00000000215000", "NOMINA1"),   # abono  +2150,00
+        mov_std("100925", "1", "00000000087525", "IVA1"),      # cargo   -875,25
+        mov_std("011025", "1", "00000000095000", "ALQ1"),      # cargo   -950,00
+        mov_std("031025", "2", "00000000340000", "COB1"),      # abono  +3400,00
+        mov_std("011025", "1", "00000000001250", "COM1"),      # cargo    -12,50
     ]
     saldo_final = "00000000871100" if descuadre else "00000000871225"
     fin_cuenta = reg80("33", [
-        (3, "2100"), (7, "0418"), (11, "1234567890"),
-        (20, "00005"), (25, "2"), (26, "00000000371225"),
-        (40, "2"), (41, saldo_final),
+        (3, "2100"), (7, "0418"), (11, "1234567890"), (21, "45"),
+        (23, "000003"),              # nº movimientos Debe (índices 22:28)
+        (29, "00000000183775"),      # importe total Debe (índices 28:42)
+        (43, "000002"),              # nº movimientos Haber (índices 42:48)
+        (49, "00000000555000"),      # importe total Haber (índices 48:62)
+        (63, "2"),                   # clave saldo final (índice 62)
+        (64, saldo_final),           # saldo final (índices 63:77)
+        (78, "EUR"),
     ])
     return [cab] + movs + [fin_cuenta, reg80("99", [])]
 
