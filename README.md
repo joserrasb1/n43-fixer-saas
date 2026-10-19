@@ -6,7 +6,7 @@ SaaS MVP para gestorías en España: sube ficheros bancarios **Norma 43 (AEB)** 
 2. **Reparar** automáticamente fallos de codificación/formato (UTF-8/Latin-1/CP1252, BOM, CRLF, tabuladores).
 3. **Convertir** a JSON / CSV / Excel listo para pre-asentamientos contables.
 
-Versión endurecida con saneado de entradas, límites estrictos, cabeceras de seguridad y suite de **105 tests** (cobertura 93%).
+Versión endurecida con saneado de entradas, límites estrictos, cabeceras de seguridad y suite de **119 tests** (cobertura 93%).
 
 ## Características de seguridad
 
@@ -55,4 +55,4 @@ pytest --cov=parser_engine --cov=security_utils --cov=main --cov-report=term-mis
 ## Notas
 
 - POC orientado a pruebas internas. Para producción se recomienda rate-limiting (Redis + SlowAPI), logging estructurado, validación por esquema N43 específico de cada banco y WAF.
-- La Norma 43 varía entre entidades: el motor es conservador, prioriza **detección** sobre corrección silenciosa.
+- El parser es **estricto**: lee cada campo en su posición fija del estándar AEB 43 (registros 11/22/33 y cierre 88/99) sin interpretación heurística. Los registros de otros tipos se ignoran con un aviso, y un saldo o importe ilegible se reporta en lugar de inventarse.

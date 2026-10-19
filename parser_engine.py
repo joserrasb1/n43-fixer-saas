@@ -4,9 +4,11 @@ parser_engine.py
 ----------------
 Motor determinista y seguro para ficheros Norma 43 (AEB 43).
 
-Dos modos de parseo, detectados automáticamente:
+Parseo ESTRICTO del estándar AEB 43 (posiciones fijas, índices 0-based). No
+hay modo heurístico ni interpretación aproximada: cada campo se lee de su
+posición exacta y, si no contiene datos válidos, se emite un aviso o un error.
 
-1. ESTÁNDAR AEB 43 (posiciones fijas, índices Python 0-based):
+Normalización y registros reconocidos (índices 0-based):
    - Cada línea se normaliza a EXACTAMENTE 80 caracteres:
      * si es más corta -> se completa con espacios a la derecha (.ljust(80))
      * si es más larga  -> se recorta a los primeros 80 (linea[:80])
@@ -24,10 +26,8 @@ Dos modos de parseo, detectados automáticamente:
      para verificar el cuadre.
    - Registro 88/99 (fin de archivo): reconocidos como tráiler de cierre
      (tiene_trailer = true).
-
-2. HEURÍSTICO (fallback): para ficheros no estándar o con estructura parcial
-   se mantiene el análisis orientativo por primer carácter (1/2/9) y patrones
-   numéricos.
+   - Cualquier otro tipo de registro (13, 23, 34...) se ignora con un aviso:
+     el parser solo extrae datos de 11/22/33 y detecta el cierre con 88/99.
 
 Notas de seguridad/robustez (igual que versiones anteriores):
 - Validación con security_utils (filename, contenido, texto)
@@ -173,7 +173,6 @@ class ParseResult:
     ok: bool
     filename: Optional[str] = None
     filename_safe: Optional[str] = None
-    modo: str = "heurístico"       # "estándar AEB 43" | "heurístico"
     encoding_detected: Optional[str] = None
     encoding_used: Optional[str] = None
     reparado: List[str] = field(default_factory=list)
@@ -202,37 +201,14 @@ class N43Parser:
     - 33: final de cuenta (clave saldo final índice 26, saldo final 27:39)
     - 88/99: fin de archivo (tráiler de cierre)
 
-    Ficheros que no cumplen el estándar se analizan con un heurístico
-    conservador por primer carácter (1/2/9) y patrones numéricos.
+    El parseo es siempre estricto: no hay fallback heurístico. Los registros
+    de tipos distintos a 11/22/33/88/99 se ignoran con un aviso.
     """
 
     def __init__(self, filename=None):
         # type: (Optional[str]) -> None
         self.filename = filename
         self.filename_safe = secure_filename(filename)
-
-    # ------------------------- DETECCIÓN DE MODO -------------------------
-
-    def _detectar_modo_estandar(self, res):
-        # type: (ParseResult) -> bool
-        """Detecta si el fichero cumple el formato de posiciones fijas AEB 43.
-
-        Criterio: existe al menos un registro 11 (cabecera de fichero) y algún
-        registro 22 cuyo campo de importe (índices 28:42) contenga 14 dígitos.
-        Los ficheros heurísticos de pruebas/no estándar no cumplen esto y
-        quedan en modo fallback.
-        """
-        lineas = [l.normalized for l in res.lineas]
-        if not any(l.startswith("11") for l in lineas):
-            return False
-        movs = [l for l in lineas if l.startswith("22")]
-        if not movs:
-            return False
-        for m in movs:
-            campo = m[28:42]  # índices 28:42 (14 dígitos, importe del estándar)
-            if len(campo) == 14 and campo.isdigit():
-                return True
-        return False
 
     # ------------------------- CAMPOS DE POSICIÓN FIJA -------------------------
 
@@ -421,51 +397,50 @@ class N43Parser:
         if empty_cnt > len(res.lineas) * 0.8:
             res.warnings.append("Más del 80% de líneas parecen vacías tras normalización")
         self._infer_record_types(res)
-        if self._detectar_modo_estandar(res):
-            res.modo = "estándar AEB 43"
-            self._extract_cabecera_estandar(res)
-            self._extract_movimientos_estandar(res)
-            self._extract_final_estandar(res)
-            self._validate_balances_estandar(res)
-        else:
-            res.modo = "heurístico"
-            self._extract_header_trailer(res)
-            self._extract_movements(res)
-            self._validate_balances(res)
+        self._extract_cabecera(res)
+        self._extract_movimientos(res)
+        self._extract_final(res)
+        self._validate_balances(res)
         self._validate_lengths(res)
         self._build_summary(res)
         res.ok = len(res.errores) == 0
         return res
 
-    # ------------------------- INFERENCIA DE REGISTROS -------------------------
+    # ------------------------- CLASIFICACIÓN DE REGISTROS -------------------------
 
     def _infer_record_types(self, res):
         # type: (ParseResult) -> None
+        """Clasifica cada línea por su tipo de registro en los índices 0:2.
+
+        Tipos reconocidos: 11 (cabecera), 22 (movimiento), 33 (final de
+        cuenta) y 88/99 (fin de archivo). Los demás tipos se marcan como OTHER
+        y se ignoran con un aviso: no se intenta interpretarlos.
+        """
         for li in res.lineas:
-            s = li.normalized.strip()
-            if s == "":
+            if li.normalized.strip() == "":
                 li.record_hint = "EMPTY"
                 continue
-            c0 = s[0]
-            if c0 == "1":
+            tipo = li.normalized[0:2]
+            if tipo == "11":
                 li.record_hint = "HEADER"
-            elif c0 == "2":
+            elif tipo == "22":
                 li.record_hint = "MOV"
-            elif s.startswith("33"):
-                # Final de cuenta (estándar AEB 43)
+            elif tipo == "33":
                 li.record_hint = "FINAL_CUENTA"
-            elif c0 in ("8", "9"):
-                # Fin de archivo / tráiler de cierre (88, 99 o 9)
+            elif tipo in ("88", "99"):
                 li.record_hint = "TRAILER"
             else:
                 li.record_hint = "OTHER"
-                li.warnings.append(
-                    "Carácter inicial no estándar Norma 43 (esperado 1/2/3/8/9)"
+                msg = (
+                    "Tipo de registro %r no reconocido (esperado 11/22/33/88/99): "
+                    "línea ignorada" % tipo
                 )
+                li.warnings.append(msg)
+                res.warnings.append(msg)
 
-    # ------------------------- MODO ESTÁNDAR AEB 43 -------------------------
+    # --------------------- EXTRACCIÓN ESTRICTA (POSICIONES FIJAS) ---------------------
 
-    def _extract_cabecera_estandar(self, res):
+    def _extract_cabecera(self, res):
         # type: (ParseResult) -> None
         """Registro 11: cabecera de fichero con clave de saldo inicial en el
         índice 26 ('1' deudor = negativo, '2' acreedor = positivo), saldo
@@ -513,7 +488,7 @@ class N43Parser:
             "longitud": li.length,
         }
 
-    def _extract_movimientos_estandar(self, res):
+    def _extract_movimientos(self, res):
         # type: (ParseResult) -> None
         """Registro 22: fecha de operación (índices 10:16, formato AAMMDD),
         clave de debe/haber (índice 27, '1' = cargo = negativo/gasto,
@@ -553,7 +528,7 @@ class N43Parser:
             m.extra = {"clave_operacion": clave_op, "clave_debe_haber": clave_dh}
             res.movimientos.append(m)
 
-    def _extract_final_estandar(self, res):
+    def _extract_final(self, res):
         # type: (ParseResult) -> None
         """Registro 33 (final de cuenta): clave de saldo final en el índice 26
         ('1' deudor = negativo, '2' acreedor = positivo) y saldo final en los
@@ -577,16 +552,9 @@ class N43Parser:
             clave_sf = l[26:27]                       # clave de saldo final
             saldo_decl = self._campo_importe(l[27:39])  # saldo final (12 dígitos)
             if saldo_decl is None:
-                # Fallback conservador: último importe detectable de la línea
-                nums = AMOUNT_RE.findall(l)
-                if nums:
-                    cand = _to_decimal(nums[-1])
-                    if cand is not None:
-                        saldo_decl = cand
-                        res.warnings.append(
-                            "Registro 33: saldo final leído por fallback "
-                            "(posiciones no estándar)"
-                        )
+                res.warnings.append(
+                    "Registro 33: saldo final no identificable en índices 27:39"
+                )
             # Signo del saldo final según su clave ('1' negativo, '2' positivo)
             if clave_sf == "1":
                 saldo_mult = Decimal("-1")
@@ -612,6 +580,10 @@ class N43Parser:
                 "divisa": l[39:42].strip(),
                 "longitud": li.length,
             }
+        if not fin_fichero:
+            res.warnings.append(
+                "No se detecta registro de FIN DE ARCHIVO (tipo 88/99)"
+            )
         if fin_fichero:
             li = fin_fichero[-1]
             if not res.trailer:
@@ -621,7 +593,7 @@ class N43Parser:
                 "registro": li.normalized[:2],
             }
 
-    def _validate_balances_estandar(self, res):
+    def _validate_balances(self, res):
         # type: (ParseResult) -> None
         """Cuadre estricto AEB: saldo inicial (reg. 11) + movimientos (reg. 22)
         = saldo final declarado (reg. 33). Si el tráiler declarara además la
@@ -691,74 +663,10 @@ class N43Parser:
                     "Saldos cuadran con el registro 33 (estándar AEB 43)"
                 )
         else:
-            res.warnings.append(
-                "Registro 33 sin saldo final legible: no se pudo contrastar cuadre"
-            )
-
-    # ------------------------- MODO HEURÍSTICO (FALLBACK) -------------------------
-
-    def _extract_header_trailer(self, res):
-        # type: (ParseResult) -> None
-        headers = [l for l in res.lineas if l.record_hint == "HEADER"]
-        trailers = [l for l in res.lineas if l.record_hint == "TRAILER"]
-        if len(headers) == 0:
-            res.errores.append("Falta registro de CABECERA (tipo 1)")
-        elif len(headers) > 1:
-            res.warnings.append(
-                "Se detectan %d cabeceras: se usa la primera" % len(headers)
-            )
-        if headers:
-            h = headers[0].normalized
-            res.cabecera = {
-                "linea": headers[0].lineno,
-                "raw10": h[:60] if len(h) >= 60 else h,
-                "longitud": len(h),
-            }
-            if len(h) < 20:
-                res.errores.append("Cabecera demasiado corta (<20)")
-        if len(trailers) == 0:
-            res.warnings.append(
-                "No se detecta registro FINAL/TOTALES (tipo 9). "
-                "Se intentará cuadrar por movimientos"
-            )
-        else:
-            t = trailers[-1].normalized
-            res.trailer = {
-                "linea": trailers[-1].lineno,
-                "raw10": t[:60] if len(t) >= 60 else t,
-                "longitud": len(t),
-            }
-            if len(t) < 10:
-                res.errores.append("Trailer demasiado corto (<10)")
-
-    def _extract_movements(self, res):
-        # type: (ParseResult) -> None
-        movs = [l for l in res.lineas if l.record_hint == "MOV"]
-        if len(movs) == 0:
-            res.warnings.append("No se detectan registros de MOVIMIENTO (tipo 2)")
-        for ml in movs:
-            s = ml.normalized
-            m = Movement(linea=ml.lineno)
-            # Fecha DDMMYY orientativa
-            for i in range(0, min(len(s) - 5, MAX_LINE_LEN)):
-                cand = s[i:i + 6]
-                if cand.isdigit():
-                    iso = _parse_date_ddmmyy(cand)
-                    if iso and m.fecha_operacion is None:
-                        m.fecha_operacion = iso
-                        break
-            # Importe: último número con decimales (convención orientativa)
-            nums = AMOUNT_RE.findall(s)
-            if nums:
-                imp = _to_decimal(nums[-1])
-                if imp is not None:
-                    m.importe = float(imp)
-                    m.signo = "-" if imp < 0 else "+"
-            if len(s) > 6:
-                m.concepto = s[6:42].strip()
-            if len(s) > 42:
-                m.referencia = s[42:62].strip() or None
-            res.movimientos.append(m)
+            if any(l.record_hint == "FINAL_CUENTA" for l in res.lineas):
+                res.warnings.append(
+                    "Registro 33 sin saldo final legible: no se pudo contrastar cuadre"
+                )
 
     def _validate_lengths(self, res):
         # type: (ParseResult) -> None
@@ -777,61 +685,11 @@ class N43Parser:
                 li.errors.append("Longitud movimiento < 30 (posible truncado)")
                 res.warnings.append("Línea %d: movimiento corto <30" % li.lineno)
 
-    def _validate_balances(self, res):
-        # type: (ParseResult) -> None
-        with localcontext() as ctx:
-            ctx.prec = 200
-            sum_imp = Decimal("0.00")
-            for m in res.movimientos:
-                d = _to_decimal(m.importe) if m.importe is not None else None
-                if d is None:
-                    res.warnings.append(
-                        "Línea %d: importe no identificable para cuadratura" % m.linea
-                    )
-                    continue
-                sum_imp += d
-            sum_q = sum_imp.quantize(Decimal("0.01"))
-        res.saldos = {
-            "num_movimientos": len(res.movimientos),
-            "suma_importes": float(sum_q),
-            "saldo_inicial_estimado": 0.0,
-            "saldo_final_estimado": float(sum_q),
-        }
-        t = res.trailer.get("raw10", "")
-        nums_t = AMOUNT_RE.findall(t)
-        if nums_t:
-            sf = _to_decimal(nums_t[-1])
-            if sf is not None:
-                diff = (sf - sum_q).quantize(Decimal("0.01"))
-                res.saldos.update(
-                    {
-                        "saldo_inicial_candidato_trailer": float(
-                            (sf - sum_q).quantize(Decimal("0.01"))
-                        ),
-                        "saldo_final_declarado_trailer": float(sf),
-                        "diferencia_saldo_final": float(diff),
-                    }
-                )
-                if abs(diff) >= Decimal("0.01"):
-                    res.errores.append(
-                        "Descuadre de saldo detectado: diferencia %s EUR "
-                        "(suma movimientos vs saldo final declarado)" % diff
-                    )
-                else:
-                    res.warnings.append(
-                        "Saldos parecen cuadrar con totales del trailer (aprox.)"
-                    )
-        else:
-            res.warnings.append(
-                "Trailer sin importes detectables: no se pudo contrastar saldo final"
-            )
-
     # ------------------------- RESUMEN / EXPORTACIÓN -------------------------
 
     def _build_summary(self, res):
         # type: (ParseResult) -> None
         res.resumen = {
-            "modo": res.modo,
             "total_lineas": len(res.lineas),
             "lineas_movimiento": len([l for l in res.lineas if l.record_hint == "MOV"]),
             "lineas_vacias": len([l for l in res.lineas if l.record_hint == "EMPTY"]),

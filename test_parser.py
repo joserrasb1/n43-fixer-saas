@@ -25,6 +25,7 @@ import pytest
 
 from parser_engine import (
     N43Parser,
+    _parse_date_aammdd,
     _parse_date_ddmmyy,
     _to_decimal,
     AMOUNT_RE,
@@ -88,6 +89,18 @@ def test_parse_date_ddmmyy():
     assert _parse_date_ddmmyy("abc123") is None
     assert _parse_date_ddmmyy("12345") is None
     assert _parse_date_ddmmyy("1234567") is None
+
+
+def test_parse_date_aammdd():
+    """Formato AAMMDD de la fecha de operación del registro 22."""
+    assert _parse_date_aammdd("250105") == "2025-01-05"
+    assert _parse_date_aammdd("991231") == "1999-12-31"
+    assert _parse_date_aammdd("800101") == "1980-01-01"   # regla de siglo
+    assert _parse_date_aammdd("250230") is None           # día inexistente
+    assert _parse_date_aammdd("000000") is None
+    assert _parse_date_aammdd("abc123") is None
+    assert _parse_date_aammdd("12345") is None
+    assert _parse_date_aammdd("        ") is None
 
 
 def test_regexes_compiled():
@@ -298,270 +311,6 @@ def test_secure_http_headers():
     assert "Strict-Transport-Security" in hdrs
 
 
-# ============================ PARSER: CASOS CORRECTOS ============================
-
-def _n43_correcto():
-    # type: () -> str
-    return "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "22010101234567890CONCEPTO A                +100,00",
-            "22010201234567890CONCEPTO B                -40,00",
-            "900000000000000000000000000000000000000000000060,00",
-        ]
-    )
-
-
-def test_parse_correcto_minimo(parser: N43Parser):
-    res = parser._parse_text(_n43_correcto(), filename="correcto.txt")
-    assert res.ok is True
-    assert res.filename == "correcto.txt"
-    assert res.filename_safe.endswith(".txt")
-    assert res.resumen["tiene_cabecera"] is True
-    assert res.resumen["tiene_trailer"] is True
-    assert res.resumen["lineas_movimiento"] == 2
-    assert len(res.movimientos) == 2
-    # Saldos cuadran: 100 - 40 = 60
-    assert res.saldos["suma_importes"] == 60.00
-    assert res.saldos.get("diferencia_saldo_final") == 0.00
-
-
-def test_parse_cuadra_aproximado(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "22010101234567890CONCEPTO A                +100,00",
-            "900000000000000000000000000000000000000000000100,00",
-        ]
-    )
-    res = parser._parse_text(txt, filename="cuadra.txt")
-    assert res.saldos["diferencia_saldo_final"] == 0.00
-    assert any("cuadrar" in w.lower() for w in res.warnings)
-
-
-def test_parse_varios_movimientos_signos(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "22010101234567890A                        +100,00",
-            "22010201234567890B                        -20,00",
-            "22010301234567890C                        +50,00",
-            "900000000000000000000000000000000000000000000130,00",
-        ]
-    )
-    res = parser._parse_text(txt, filename="multi.txt")
-    assert len(res.movimientos) == 3
-    signos = [m.signo for m in res.movimientos]
-    assert signos == ["+", "-", "+"]
-    assert res.saldos["suma_importes"] == 130.00
-
-
-def test_parse_fecha_extraccion(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "2 050122234567890FECHA TEST               000001000+",
-            "90000000000000000000000000000000000000000000000000",
-        ]
-    )
-    res = parser._parse_text(txt, filename="fecha.txt")
-    assert res.movimientos[0].fecha_operacion == "2022-01-05"
-
-
-def test_parse_concepto_referencia(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "22010101234567890CONCEPTO LARGO PARA TEST  REF123456          +1,00",
-            "900000000000000000000000000000000000000000000001,00",
-        ]
-    )
-    res = parser._parse_text(txt, filename="conc.txt")
-    assert "CONCEPTO LARGO PARA TEST" in res.movimientos[0].concepto
-    assert res.movimientos[0].referencia == "REF123456"
-
-
-def test_parse_summary_counts(parser: N43Parser):
-    txt = _n43_correcto()
-    res = parser._parse_text(txt, filename="cnt.txt")
-    s = res.resumen
-    assert s["total_lineas"] == 4
-    assert s["lineas_movimiento"] == 2
-    assert s["lineas_vacias"] == 0
-    assert s["tiene_cabecera"] is True
-    assert s["tiene_trailer"] is True
-    assert s["con_errores"] is False
-    assert s["num_errores"] == 0
-    assert "num_warnings" in s
-    assert "num_reparados" in s
-
-
-# ============================ PARSER: ERRORES Y DESCUADRES ============================
-
-def test_parse_con_descuadre(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "22010101234567890CONCEPTO A                +100,00",
-            "900000000000000000000000000000000000000000000200,00",
-        ]
-    )
-    res = parser._parse_text(txt, filename="descuadre.txt")
-    assert res.ok is False
-    assert "Descuadre de saldo detectado" in " ".join(res.errores)
-    assert res.saldos["diferencia_saldo_final"] == 100.00
-
-
-def test_parse_longitud_corta(parser: N43Parser):
-    txt = "11\n22\n9"
-    res = parser._parse_text(txt, filename="corto.txt")
-    assert res.resumen["con_errores"] is True
-    assert any("longitud" in e.lower() for e in res.errores)
-
-
-def test_parse_no_cabecera(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "22010101234567890CONCEPTO A                +100,00",
-            "900000000000000000000000000000000000000000000100,00",
-        ]
-    )
-    res = parser._parse_text(txt, filename="nocab.txt")
-    assert "Falta registro de CABECERA" in " ".join(res.errores)
-
-
-def test_parse_multiples_cabeceras(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "12222222222222222222",
-            "22010101234567890CONCEPTO A                +1,00",
-            "900000000000000000000000000000000000000000000001,00",
-        ]
-    )
-    res = parser._parse_text(txt, filename="multicab.txt")
-    assert any("cabeceras" in w.lower() for w in res.warnings)
-
-
-def test_parse_sin_trailer(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "22010101234567890CONCEPTO A                +50,00",
-        ]
-    )
-    res = parser._parse_text(txt, filename="sintrailer.txt")
-    assert "No se detecta registro FINAL/TOTALES" in " ".join(res.warnings)
-
-
-def test_parse_sin_movimientos(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "90000000000000000000000000000000000000000000000000",
-        ]
-    )
-    res = parser._parse_text(txt, filename="sinmovs.txt")
-    assert "No se detectan registros de MOVIMIENTO" in " ".join(res.warnings)
-
-
-def test_parse_vacio_texto(parser: N43Parser):
-    res = parser._parse_text("", filename="vacio.txt")
-    assert res.ok is False
-    assert "Fichero sin contenido útil" in res.errores
-
-
-def test_parse_solo_espacios(parser: N43Parser):
-    res = parser._parse_text("   \n\t\n   ", filename="espacios.txt")
-    assert res.ok is False
-    assert len(res.errores) >= 1
-
-
-def test_parse_otro_tipo(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "3OTRO REGISTRO NO ESTANDAR",
-            "22010101234567890CONCEPTO A                +1,00",
-            "900000000000000000000000000000000000000000000001,00",
-        ]
-    )
-    res = parser._parse_text(txt, filename="otro.txt")
-    assert any("no estándar" in w.lower() for w in res.warnings) or any(
-        l.warnings for l in res.lineas
-    )
-
-
-def test_parse_importe_no_identificable(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "22SINIMPORTECLAROXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-            "90000000000000000000000000000000000000000000000000",
-        ]
-    )
-    res = parser._parse_text(txt, filename="sinimp.txt")
-    assert any("importe no identificable" in w.lower() for w in res.warnings)
-
-
-def test_parse_trailer_sin_importes(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "22010101234567890CONCEPTO A                +1,00",
-            "900000ABCDEF0000000000000000000000000000000000",
-        ]
-    )
-    res = parser._parse_text(txt, filename="trsinimp.txt")
-    assert any("sin importes detectables" in w.lower() for w in res.warnings)
-
-
-def test_parse_movimiento_corto(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "22ABC",
-            "90000000000000000000000000000000000000000000000000",
-        ]
-    )
-    res = parser._parse_text(txt, filename="movcorto.txt")
-    assert any("movimiento corto" in w.lower() for w in res.warnings)
-
-
-def test_parse_lineas_vacias_mayoria(parser: N43Parser):
-    txt = "\n".join([""] * 9 + ["111234567890ABCDEFGHIJ1234567890"])
-    res = parser._parse_text(txt, filename="muchasvacias.txt")
-    assert res.resumen["lineas_vacias"] == 9
-    assert any("80%" in w for w in res.warnings)
-
-
-def test_parse_trailer_ultimo_si_multiples(parser: N43Parser):
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "22010101234567890X                        +5,00",
-            "900000000000000000000000000000000000000000000004,00",
-            "900000000000000000000000000000000000000000000005,00",
-        ]
-    )
-    res = parser._parse_text(txt, filename="multitrailer.txt")
-    assert res.trailer["linea"] == 4
-
-
-def test_legado_88_reconocido_como_trailer(parser: N43Parser):
-    """El registro 88 debe valer como fin de archivo/tráiler también en modo heurístico."""
-    txt = "\n".join(
-        [
-            "111234567890ABCDEFGHIJ1234567890",
-            "22010101234567890CONCEPTO A                +50,00",
-            "88" + " " * 78,
-        ]
-    )
-    res = parser._parse_text(txt, filename="legado88.txt")
-    assert res.resumen["tiene_trailer"] is True
-    assert "No se detecta registro FINAL/TOTALES" not in " ".join(res.warnings)
-
-
 # ============================ PARSER: ESTÁNDAR AEB 43 (POSICIONES FIJAS) ============================
 
 def _reg80(clave, campos):
@@ -620,11 +369,230 @@ def _n43_estandar(descuadre=False, fin="99"):
     return "\n".join([cab] + movs + [fin_cuenta, _reg80(fin, [])])
 
 
-def test_estandar_modo_detectado_y_cuadre(parser: N43Parser):
-    res = parser._parse_text(_n43_estandar(), filename="estandar.txt")
-    assert res.modo == "estándar AEB 43"
+# ---------------------------- CASOS CORRECTOS ----------------------------
+
+def test_parse_correcto_minimo(parser: N43Parser):
+    res = parser._parse_text(_n43_estandar(), filename="correcto.txt")
     assert res.ok is True
-    assert res.resumen["modo"] == "estándar AEB 43"
+    assert res.filename == "correcto.txt"
+    assert res.filename_safe.endswith(".txt")
+    assert res.resumen["tiene_cabecera"] is True
+    assert res.resumen["tiene_trailer"] is True
+    assert res.resumen["lineas_movimiento"] == 5
+    assert len(res.movimientos) == 5
+    assert res.saldos["suma_importes"] == 3712.25
+    assert res.saldos.get("diferencia_saldo_final") == 0.00
+
+
+def test_parse_cuadra_exacto_avisa(parser: N43Parser):
+    """Con registro 33 que cuadra exacto se emite aviso informativo (ok=True)."""
+    cab = _reg80("11", [(27, "2"), (28, "000000010000")])   # saldo 100,00
+    mov = _reg80("22", [
+        (11, "251015"), (28, "2"), (29, "00000000010000"), (43, "ABONO"),
+    ])
+    fin = _reg80("33", [(27, "2"), (28, "000000020000")])   # saldo 200,00
+    txt = "\n".join([cab, mov, fin, _reg80("99", [])])
+    res = parser._parse_text(txt, filename="cuadra.txt")
+    assert res.ok is True
+    assert res.saldos["diferencia_saldo_final"] == 0.00
+    assert any("cuadran" in w.lower() for w in res.warnings)
+
+
+def test_parse_varios_movimientos_signos(parser: N43Parser):
+    txt = "\n".join([
+        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000010000"), (43, "A")]),
+        _reg80("22", [(11, "251002"), (28, "1"), (29, "00000000002000"), (43, "B")]),
+        _reg80("22", [(11, "251003"), (28, "2"), (29, "00000000005000"), (43, "C")]),
+        _reg80("33", [(27, "2"), (28, "000000013000")]),
+        _reg80("99", []),
+    ])
+    res = parser._parse_text(txt, filename="multi.txt")
+    assert len(res.movimientos) == 3
+    assert [m.signo for m in res.movimientos] == ["+", "-", "+"]
+    assert res.saldos["suma_importes"] == 130.00
+    assert res.ok is True
+
+
+def test_parse_fecha_extraccion(parser: N43Parser):
+    """Fecha de operación en índices 10:16 con formato AAMMDD."""
+    cab = _reg80("11", [(27, "2"), (28, "00000000000000")])
+    mov = _reg80("22", [
+        (11, "250105"), (28, "2"), (29, "00000000000001"),
+    ])
+    txt = "\n".join([cab, mov, _reg80("99", [])])
+    res = parser._parse_text(txt, filename="fecha.txt")
+    assert res.movimientos[0].fecha_operacion == "2025-01-05"
+
+
+def test_parse_concepto(parser: N43Parser):
+    """El concepto común/propio se lee desde el índice 42."""
+    cab = _reg80("11", [(27, "2"), (28, "00000000000000")])
+    mov = _reg80("22", [
+        (11, "251001"), (28, "2"), (29, "00000000000001"),
+        (43, "CONCEPTO LARGO PARA TEST"),
+    ])
+    txt = "\n".join([cab, mov, _reg80("99", [])])
+    res = parser._parse_text(txt, filename="conc.txt")
+    assert res.movimientos[0].concepto == "CONCEPTO LARGO PARA TEST"
+
+
+def test_parse_summary_counts(parser: N43Parser):
+    txt = _n43_estandar()
+    res = parser._parse_text(txt, filename="cnt.txt")
+    s = res.resumen
+    assert s["total_lineas"] == 8
+    assert s["lineas_movimiento"] == 5
+    assert s["lineas_vacias"] == 0
+    assert s["tiene_cabecera"] is True
+    assert s["tiene_trailer"] is True
+    assert s["con_errores"] is False
+    assert s["num_errores"] == 0
+    assert "num_warnings" in s
+    assert "num_reparados" in s
+
+
+# ============================ PARSER: ERRORES Y DESCUADRES ============================
+
+def test_parse_con_descuadre(parser: N43Parser):
+    res = parser._parse_text(_n43_estandar(descuadre=True), filename="descuadre.txt")
+    assert res.ok is False
+    assert "Descuadre de saldo detectado" in " ".join(res.errores)
+    assert res.saldos["diferencia_saldo_final"] == -1.25
+
+
+def test_parse_longitud_corta(parser: N43Parser):
+    txt = "11\n22\n9"
+    res = parser._parse_text(txt, filename="corto.txt")
+    assert res.resumen["con_errores"] is True
+    assert any("longitud" in e.lower() for e in res.errores)
+
+
+def test_parse_no_cabecera(parser: N43Parser):
+    txt = "\n".join([
+        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000010000")]),
+        _reg80("99", []),
+    ])
+    res = parser._parse_text(txt, filename="nocab.txt")
+    assert "Falta registro de CABECERA" in " ".join(res.errores)
+
+
+def test_parse_multiples_cabeceras(parser: N43Parser):
+    txt = "\n".join([
+        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000010000")]),
+        _reg80("33", [(27, "2"), (28, "000000010000")]),
+        _reg80("99", []),
+    ])
+    res = parser._parse_text(txt, filename="multicab.txt")
+    assert any("registros tipo 11" in w.lower() for w in res.warnings)
+
+
+def test_parse_sin_trailer(parser: N43Parser):
+    """Sin registro 33 ni fin de archivo 88/99 se avisa de ambos."""
+    txt = "\n".join([
+        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000005000")]),
+    ])
+    res = parser._parse_text(txt, filename="sintrailer.txt")
+    assert "FINAL DE CUENTA (tipo 33)" in " ".join(res.warnings)
+    assert any("FIN DE ARCHIVO" in w for w in res.warnings)
+
+
+def test_parse_sin_movimientos(parser: N43Parser):
+    txt = "\n".join([
+        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        _reg80("99", []),
+    ])
+    res = parser._parse_text(txt, filename="sinmovs.txt")
+    assert "No se detectan registros de MOVIMIENTO" in " ".join(res.warnings)
+
+
+def test_parse_vacio_texto(parser: N43Parser):
+    res = parser._parse_text("", filename="vacio.txt")
+    assert res.ok is False
+    assert "Fichero sin contenido útil" in res.errores
+
+
+def test_parse_solo_espacios(parser: N43Parser):
+    res = parser._parse_text("   \n\t\n   ", filename="espacios.txt")
+    assert res.ok is False
+    assert len(res.errores) >= 1
+
+
+def test_parse_otro_tipo(parser: N43Parser):
+    """Los registros ajenos a 11/22/33/88/99 se ignoran con aviso."""
+    txt = "\n".join([
+        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        _reg80("13", []),   # cabecera de cuenta: tipo no soportado
+        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000010000")]),
+        _reg80("33", [(27, "2"), (28, "000000010000")]),
+        _reg80("99", []),
+    ])
+    res = parser._parse_text(txt, filename="otro.txt")
+    assert any("no reconocido" in w.lower() for w in res.warnings)
+    assert any(l.warnings for l in res.lineas if l.record_hint == "OTHER")
+
+
+def test_parse_importe_no_identificable(parser: N43Parser):
+    txt = "\n".join([
+        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        "22SINIMPORTECLAROXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+        _reg80("99", []),
+    ])
+    res = parser._parse_text(txt, filename="sinimp.txt")
+    assert any("importe no identificable" in w.lower() for w in res.warnings)
+
+
+def test_parse_reg33_sin_saldo_legible(parser: N43Parser):
+    """Sin fallback heurístico: si 27:39 no es numérico se avisa y no se inventa."""
+    txt = "\n".join([
+        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000010000")]),
+        _reg80("33", [(27, "2"), (28, "XXXXXXXXXXXX")]),
+        _reg80("99", []),
+    ])
+    res = parser._parse_text(txt, filename="reg33sin.txt")
+    assert any("sin saldo final legible" in w.lower() for w in res.warnings)
+    assert res.trailer["saldo_final"] is None
+
+
+def test_parse_movimiento_corto(parser: N43Parser):
+    txt = "\n".join([
+        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        "22ABC",
+        _reg80("99", []),
+    ])
+    res = parser._parse_text(txt, filename="movcorto.txt")
+    assert any("movimiento corto" in w.lower() for w in res.warnings)
+
+
+def test_parse_lineas_vacias_mayoria(parser: N43Parser):
+    txt = "\n".join([""] * 9 + ["111234567890ABCDEFGHIJ1234567890"])
+    res = parser._parse_text(txt, filename="muchasvacias.txt")
+    assert res.resumen["lineas_vacias"] == 9
+    assert any("80%" in w for w in res.warnings)
+
+
+def test_parse_reg33_ultimo_si_multiples(parser: N43Parser):
+    txt = "\n".join([
+        _reg80("11", [(27, "2"), (28, "00000000000000")]),
+        _reg80("22", [(11, "251001"), (28, "2"), (29, "00000000005000")]),
+        _reg80("33", [(27, "2"), (28, "000000000400")]),
+        _reg80("33", [(27, "2"), (28, "000000000500")]),
+        _reg80("99", []),
+    ])
+    res = parser._parse_text(txt, filename="multireg33.txt")
+    assert res.trailer["linea"] == 4
+    assert any("registros tipo 33" in w.lower() for w in res.warnings)
+
+
+# ---------------------------- CASOS AVANZADOS DEL ESTÁNDAR ----------------------------
+
+def test_estandar_cuadre_completo(parser: N43Parser):
+    res = parser._parse_text(_n43_estandar(), filename="estandar.txt")
+    assert res.ok is True
     assert res.resumen["tiene_cabecera"] is True
     assert res.resumen["tiene_trailer"] is True
     assert len(res.movimientos) == 5
@@ -651,7 +619,6 @@ def test_estandar_registro22_signo_cero_advertencia(parser: N43Parser):
     lines = _n43_estandar().splitlines()
     lines[1] = lines[1][:27] + "0" + lines[1][28:]
     res = parser._parse_text("\n".join(lines), filename="signo0.txt")
-    assert res.modo == "estándar AEB 43"
     assert any("clave de debe/haber '0' no válida" in w for w in res.warnings)
     assert res.movimientos[0].importe == 2150.00  # sin firmar → positivo
 
@@ -668,7 +635,6 @@ def test_estandar_registro11_saldo_deudor(parser: N43Parser):
     ])
     fin = _reg80("99", [])
     res = parser._parse_text("\n".join([cab, mov, fin]), filename="deudor.txt")
-    assert res.modo == "estándar AEB 43"
     assert res.cabecera["registro"] == "11"
     assert res.cabecera["clave_saldo"] == "1"
     assert res.cabecera["saldo_inicial"] == -100.00
@@ -691,7 +657,6 @@ def test_estandar_registro22_fechas_y_concepto(parser: N43Parser):
 
 def test_estandar_descuadre_saldo(parser: N43Parser):
     res = parser._parse_text(_n43_estandar(descuadre=True), filename="desc.txt")
-    assert res.modo == "estándar AEB 43"
     assert res.ok is False
     assert any("Descuadre de saldo detectado" in e for e in res.errores)
     assert res.saldos["diferencia_saldo_final"] == -1.25
@@ -702,7 +667,6 @@ def test_estandar_linea_corta_se_rellena_a_80(parser: N43Parser):
     antes de parsear las posiciones absolutas."""
     txt = "\n".join(l[:45] for l in _n43_estandar().splitlines())
     res = parser._parse_text(txt, filename="corta80.txt")
-    assert res.modo == "estándar AEB 43"
     for l in res.lineas:
         assert len(l.normalized) == 80
     assert [m.importe for m in res.movimientos] == [
@@ -714,7 +678,6 @@ def test_estandar_linea_larga_se_recorta_a_80(parser: N43Parser):
     """Líneas con basura más allá de la posición 80 se recortan exactamente a 80."""
     txt = "\n".join(l + "XXTRASH" for l in _n43_estandar().splitlines())
     res = parser._parse_text(txt, filename="larga80.txt")
-    assert res.modo == "estándar AEB 43"
     assert res.ok is True
     assert len(res.movimientos) == 5
     assert res.saldos["diferencia_saldo_final"] == 0.00
@@ -723,7 +686,6 @@ def test_estandar_linea_larga_se_recorta_a_80(parser: N43Parser):
 def test_estandar_fin_fichero_88(parser: N43Parser):
     txt = _n43_estandar().replace(_reg80("99", []), _reg80("88", []))
     res = parser._parse_text(txt, filename="fin88.txt")
-    assert res.modo == "estándar AEB 43"
     assert res.resumen["tiene_trailer"] is True
     assert res.trailer["fin_fichero"]["registro"] == "88"
     assert res.ok is True
@@ -738,19 +700,18 @@ def test_estandar_fin_fichero_99(parser: N43Parser):
 def test_estandar_parse_bytes_end_to_end(parser: N43Parser):
     res = parser.parse_bytes(_n43_estandar().encode("utf-8"), filename="e2e.txt")
     assert res.ok is True
-    assert res.modo == "estándar AEB 43"
     assert res.saldos["diferencia_saldo_final"] == 0.00
 
 
 def test_no_repara_espacios_finales(parser: N43Parser):
     """La Norma 43 requiere el relleno de espacios: NO se recortan ni se
     reportan como reparación."""
-    txt = "111234567890ABCDEFGHIJ1234567890   \r\n22010101234567890A +50,00   \r\n900000000000000000000000000000000000000000000050,00   \r\n"
+    txt = "\r\n".join(l + "   " for l in _n43_estandar().splitlines()) + "\r\n"
     res = parser.parse_bytes(txt.encode("utf-8"), filename="espacios.txt")
     assert not any("espacios finales" in r.lower() for r in res.reparado)
     # Los espacios finales se conservan (raw intacto) y el análisis funciona
     assert res.ok is True
-    assert res.saldos["suma_importes"] == 50.00
+    assert res.saldos["suma_importes"] == 3712.25
 
 
 # ============================ PARSER: LÍMITES / DoS ============================
@@ -942,7 +903,7 @@ def test_to_json_structure_and_roundtrip(parser: N43Parser):
 
 
 def test_to_csv_bytes(parser: N43Parser):
-    res = parser._parse_text(_n43_correcto(), filename="csv.txt")
+    res = parser._parse_text(_n43_estandar(), filename="csv.txt")
     csvb = parser.to_csv_bytes(res)
     assert isinstance(csvb, bytes)
     assert len(csvb) > 0
@@ -950,7 +911,7 @@ def test_to_csv_bytes(parser: N43Parser):
 
 
 def test_to_excel_bytes(parser: N43Parser):
-    res = parser._parse_text(_n43_correcto(), filename="xlsx.txt")
+    res = parser._parse_text(_n43_estandar(), filename="xlsx.txt")
     xlsb = parser.to_excel_bytes(res)
     assert isinstance(xlsb, bytes)
     assert len(xlsb) > 0
@@ -972,7 +933,7 @@ def test_exports_empty_movs_safe(parser: N43Parser):
 
 # ============================ API FASTAPI (END-TO-END) ============================
 
-VALID_N43 = _n43_correcto().encode("utf-8")
+VALID_N43 = _n43_estandar().encode("utf-8")
 
 
 @pytest.fixture
@@ -1027,9 +988,9 @@ def test_api_parse_ok(client):
     assert r.status_code == 200
     j = r.json()
     assert j["ok"] is True
-    assert j["resumen"]["lineas_movimiento"] == 2
-    assert len(j["movimientos"]) == 2
-    assert j["saldos"]["suma_importes"] == 60.00
+    assert j["resumen"]["lineas_movimiento"] == 5
+    assert len(j["movimientos"]) == 5
+    assert j["saldos"]["suma_importes"] == 3712.25
 
 
 def test_api_parse_rejects_exe(client):
