@@ -590,36 +590,32 @@ def _n43_estandar(descuadre=False, fin="99"):
         (3, "2100"), (7, "0418"), (11, "1234567890"),
         (21, "150925"),              # fecha apertura DDMMAA (índices 20:26)
         (27, "2"),                   # clave saldo inicial (índice 26)
-        (28, "00000000500000"),      # saldo inicial (índices 27:41)
-        (42, "EUR"),                 # divisa (índices 41:44)
+        (28, "000000500000"),        # saldo inicial 12 dígitos (índices 27:39)
+        (40, "EUR"),                 # divisa (índices 39:42, fuera del saldo)
     ])
 
     def mov(fecha, clave_dh, importe, doc):
         return _reg80("22", [
-            (3, "01"), (5, fecha), (11, fecha[:4] + "20" + fecha[4:]),
-            (19, "02"),              # concepto común (índices 18:20)
-            (22, clave_dh),          # debe/haber (índice 21)
-            (23, importe),           # importe (índices 22:36)
-            (42, doc),               # referencia (índices 41:54)
+            (3, "01"),               # clave de operación (índices 2:4)
+            (11, fecha),             # fecha operación AAMMDD (índices 10:16)
+            (28, clave_dh),          # debe/haber (índice 27)
+            (29, importe),           # importe 14 dígitos (índices 28:42)
+            (43, doc),               # concepto común/propio (desde índice 42)
         ])
 
     movs = [
-        mov("150925", "2", "00000000215000", "NOMINA1"),   # abono  +2150,00
-        mov("100925", "1", "00000000087525", "IVA1"),      # cargo   -875,25
-        mov("011025", "1", "00000000095000", "ALQ1"),      # cargo   -950,00
-        mov("031025", "2", "00000000340000", "COB1"),      # abono  +3400,00
-        mov("011025", "1", "00000000001250", "COM1"),      # cargo    -12,50
+        mov("250915", "2", "00000000215000", "NOMINA1"),   # abono  +2150,00
+        mov("250910", "1", "00000000087525", "IVA1"),      # cargo   -875,25
+        mov("251001", "1", "00000000095000", "ALQ1"),      # cargo   -950,00
+        mov("251003", "2", "00000000340000", "COB1"),      # abono  +3400,00
+        mov("251001", "1", "00000000001250", "COM1"),      # cargo    -12,50
     ]
-    saldo_final = "00000000871100" if descuadre else "00000000871225"
+    saldo_final = "000000871100" if descuadre else "000000871225"
     fin_cuenta = _reg80("33", [
-        (3, "2100"), (7, "0418"), (11, "1234567890"), (21, "45"),
-        (23, "000003"),              # nº movimientos Debe (índices 22:28)
-        (29, "00000000183775"),      # importe total Debe (índices 28:42)
-        (43, "000002"),              # nº movimientos Haber (índices 42:48)
-        (49, "00000000555000"),      # importe total Haber (índices 48:62)
-        (63, "2"),                   # clave saldo final (índice 62)
-        (64, saldo_final),           # saldo final (índices 63:77)
-        (78, "EUR"),
+        (3, "2100"), (7, "0418"), (11, "1234567890"),
+        (27, "2"),                   # clave saldo final (índice 26)
+        (28, saldo_final),           # saldo final 12 dígitos (índices 27:39)
+        (40, "EUR"),                 # divisa (índices 39:42)
     ])
     return "\n".join([cab] + movs + [fin_cuenta, _reg80(fin, [])])
 
@@ -632,9 +628,9 @@ def test_estandar_modo_detectado_y_cuadre(parser: N43Parser):
     assert res.resumen["tiene_cabecera"] is True
     assert res.resumen["tiene_trailer"] is True
     assert len(res.movimientos) == 5
-    # Saldo inicial registro 11 (índices 27:41, clave '2' acreedor = positivo)
+    # Saldo inicial registro 11 (índices 27:39, clave '2' acreedor = positivo)
     assert res.saldos["saldo_inicial_estimado"] == 5000.00
-    # Importes firmados según clave debe/haber (índice 21)
+    # Importes firmados según clave debe/haber (índice 27)
     assert [m.importe for m in res.movimientos] == [
         2150.00, -875.25, -950.00, 3400.00, -12.50,
     ]
@@ -643,21 +639,17 @@ def test_estandar_modo_detectado_y_cuadre(parser: N43Parser):
     # Cuadre estricto: 5000 + 3712,25 = 8712,25 declarado en el registro 33
     assert res.saldos["saldo_final_declarado_trailer"] == 8712.25
     assert res.saldos["diferencia_saldo_final"] == 0.00
-    assert res.saldos["num_movimientos_declarado"] == 5
-    assert res.saldos["suma_importes_declarada"] == 3712.25
-    # Registro 33: desglose oficial Debe/Haber
-    assert res.trailer["num_movimientos_debe"] == 3
-    assert res.trailer["num_movimientos_haber"] == 2
-    assert res.trailer["importe_total_debe"] == 1837.75
-    assert res.trailer["importe_total_haber"] == 5550.00
+    # Registro 33: clave y saldo final en los mismos índices que el reg. 11
     assert res.trailer["clave_saldo_final"] == "2"
+    assert res.trailer["saldo_final"] == 8712.25
+    assert res.trailer["divisa"] == "EUR"
 
 
 def test_estandar_registro22_signo_cero_advertencia(parser: N43Parser):
-    """Un '0' en el índice 21 no es un signo válido (solo '1' cargo o '2'
+    """Un '0' en el índice 27 no es un signo válido (solo '1' cargo o '2'
     abono): se avisa y el importe queda sin firmar (positivo)."""
     lines = _n43_estandar().splitlines()
-    lines[1] = lines[1][:21] + "0" + lines[1][22:]
+    lines[1] = lines[1][:27] + "0" + lines[1][28:]
     res = parser._parse_text("\n".join(lines), filename="signo0.txt")
     assert res.modo == "estándar AEB 43"
     assert any("clave de debe/haber '0' no válida" in w for w in res.warnings)
@@ -668,11 +660,11 @@ def test_estandar_registro11_saldo_deudor(parser: N43Parser):
     """Clave '1' en el índice 26 del registro 11 → saldo inicial negativo."""
     cab = _reg80("11", [
         (3, "2100"), (7, "0418"), (11, "1234567890"),
-        (21, "150925"), (27, "1"), (28, "00000000010000"), (42, "EUR"),
+        (21, "150925"), (27, "1"), (28, "000000010000"), (40, "EUR"),
     ])
     mov = _reg80("22", [
-        (3, "01"), (5, "150925"), (11, "15092025"),
-        (19, "02"), (22, "2"), (23, "00000000050000"), (42, "TEST1"),
+        (3, "01"), (11, "250915"),
+        (28, "2"), (29, "00000000050000"), (43, "TEST1"),
     ])
     fin = _reg80("99", [])
     res = parser._parse_text("\n".join([cab, mov, fin]), filename="deudor.txt")
@@ -680,6 +672,7 @@ def test_estandar_registro11_saldo_deudor(parser: N43Parser):
     assert res.cabecera["registro"] == "11"
     assert res.cabecera["clave_saldo"] == "1"
     assert res.cabecera["saldo_inicial"] == -100.00
+    assert res.cabecera["divisa"] == "EUR"
     assert res.saldos["saldo_inicial_estimado"] == -100.00
     assert res.cabecera["entidad"] == "2100"
     assert res.cabecera["cuenta"] == "1234567890"
@@ -689,12 +682,11 @@ def test_estandar_registro11_saldo_deudor(parser: N43Parser):
 def test_estandar_registro22_fechas_y_concepto(parser: N43Parser):
     res = parser._parse_text(_n43_estandar(), filename="fechas22.txt")
     m = res.movimientos[0]
-    assert m.fecha_operacion == "2025-09-15"   # índices 4:10 (DDMMAA)
-    assert m.fecha_valor == "2025-09-15"       # índices 10:18 (DDMMAAAA)
-    assert m.extra["clave_debe_haber"] == "2"  # índice 21
-    assert m.extra["clave_debe_haber"] == "2"
+    assert m.fecha_operacion == "2025-09-15"   # índices 10:16 (AAMMDD "250915")
+    assert m.fecha_valor is None               # no definido en este layout
+    assert m.extra["clave_debe_haber"] == "2"  # índice 27
     assert m.extra["clave_operacion"] == "01"
-    assert m.referencia == "NOMINA1"
+    assert m.concepto == "NOMINA1"             # concepto desde el índice 42
 
 
 def test_estandar_descuadre_saldo(parser: N43Parser):
@@ -703,16 +695,6 @@ def test_estandar_descuadre_saldo(parser: N43Parser):
     assert res.ok is False
     assert any("Descuadre de saldo detectado" in e for e in res.errores)
     assert res.saldos["diferencia_saldo_final"] == -1.25
-
-
-def test_estandar_num_movimientos_declarado_no_coincide(parser: N43Parser):
-    lines = _n43_estandar().splitlines()
-    fin = lines[-2]  # registro 33 (penúltima línea)
-    # Nº movimientos Debe (índices 22:28): declara 1 (+2 del Haber = 3 en total)
-    lines[-2] = fin[:22] + "000001" + fin[28:]
-    res = parser._parse_text("\n".join(lines), filename="nummov.txt")
-    assert res.saldos["num_movimientos_declarado"] == 3
-    assert any("declara 3 movimientos" in w for w in res.warnings)
 
 
 def test_estandar_linea_corta_se_rellena_a_80(parser: N43Parser):
