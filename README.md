@@ -56,3 +56,4 @@ pytest --cov=parser_engine --cov=security_utils --cov=main --cov-report=term-mis
 
 - POC orientado a pruebas internas. Para producción se recomienda rate-limiting (Redis + SlowAPI), logging estructurado, validación por esquema N43 específico de cada banco y WAF.
 - El parser es **estricto**: lee cada campo en su posición fija del estándar AEB 43 (registros 11/22/33 y cierre 88/99) sin interpretación heurística. Los registros de otros tipos se ignoran con un aviso, y un saldo o importe ilegible se reporta en lugar de inventarse.
+- **Modo tolerante de cuadre:** los descuadres del registro 33 (contadores, totales al debe/haber o saldo final) se reportan como **avisos** y no impiden el parseo ni la exportación de los movimientos. El campo `saldos.cuadra` lo resume (`true` cuadra / `false` descuadre / `null` sin datos de cierre) y la web lo muestra como «Válido con descuadre».

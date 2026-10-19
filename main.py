@@ -428,6 +428,7 @@ tailwind.config = {
     var estado = document.getElementById('estado');
     var cls, txt;
     if (!j.ok) { txt = 'Con errores'; cls = 'bg-red-50 text-red-700 ring-red-200'; }
+    else if ((j.saldos || {}).cuadra === false) { txt = 'Válido con descuadre'; cls = 'bg-orange-50 text-orange-700 ring-orange-200'; }
     else if ((j.warnings || []).length) { txt = 'Válido con avisos'; cls = 'bg-amber-50 text-amber-700 ring-amber-200'; }
     else { txt = 'Válido · todo cuadra'; cls = 'bg-emerald-50 text-emerald-700 ring-emerald-200'; }
     estado.textContent = txt;

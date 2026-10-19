@@ -619,11 +619,17 @@ class N43Parser:
 
     def _validate_balances(self, res):
         # type: (ParseResult) -> None
-        """Cuadre estricto AEB 43:
+        """Comprobación de cuadre AEB 43 (modo tolerante):
         - saldo inicial (reg. 11) + movimientos firmados (reg. 22) = saldo
           final declarado (reg. 33);
         - número de movimientos y totales al debe/haber declarados en el
-          registro 33 frente a lo parseado (si están presentes)."""
+          registro 33 frente a lo parseado (si están presentes).
+
+        Los descuadres se registran como AVISOS (no bloquean el parseo): así un
+        fichero con el cierre incoherente o ilegible sigue mostrando y pudiendo
+        exportar sus movimientos. `res.saldos["cuadra"]` resume el resultado
+        (True cuadra / False descuadre / None sin datos de cierre).
+        """
         with localcontext() as ctx:
             ctx.prec = 200
             suma = Decimal("0.00")
@@ -679,43 +685,53 @@ class N43Parser:
         if decl_thaber is not None:
             res.saldos["total_haber_declarado"] = decl_thaber
 
+        # Modo tolerante: los descuadres de cuadre NO impiden el parseo. Se
+        # registran como avisos (visibles) y la bandera `cuadra` los resume,
+        # de modo que los movimientos siguen siendo utilizables/exportables.
+        incidencias = []  # type: List[str]
+
         if decl_ndebe is not None and decl_ndebe != num_debe:
             res.warnings.append(
                 "El registro 33 declara %d movimientos al debe y se han "
                 "parseado %d" % (decl_ndebe, num_debe)
             )
+            incidencias.append("num_movimientos_debe")
         if decl_nhaber is not None and decl_nhaber != num_haber:
             res.warnings.append(
                 "El registro 33 declara %d movimientos al haber y se han "
                 "parseado %d" % (decl_nhaber, num_haber)
             )
+            incidencias.append("num_movimientos_haber")
         if decl_tdebe is not None:
             dd = (_to_decimal(decl_tdebe) - debe_q).quantize(Decimal("0.01"))
             if abs(dd) >= Decimal("0.01"):
-                res.errores.append(
+                res.warnings.append(
                     "Descuadre en el total al debe del registro 33: "
                     "diferencia %s EUR" % dd
                 )
+                incidencias.append("total_debe")
         if decl_thaber is not None:
             dh = (_to_decimal(decl_thaber) - haber_q).quantize(Decimal("0.01"))
             if abs(dh) >= Decimal("0.01"):
-                res.errores.append(
+                res.warnings.append(
                     "Descuadre en el total al haber del registro 33: "
                     "diferencia %s EUR" % dh
                 )
+                incidencias.append("total_haber")
 
         if declarado is not None:
             base = _to_decimal(inicial) if inicial is not None else Decimal("0.00")
             dif = (_to_decimal(declarado) - (base + suma_q)).quantize(Decimal("0.01"))
             res.saldos["diferencia_saldo_final"] = float(dif)
             if abs(dif) >= Decimal("0.01"):
+                incidencias.append("saldo_final")
                 if inicial is not None:
-                    res.errores.append(
+                    res.warnings.append(
                         "Descuadre de saldo detectado: diferencia %s EUR "
                         "(saldo inicial + movimientos vs saldo final declarado)" % dif
                     )
                 else:
-                    res.errores.append(
+                    res.warnings.append(
                         "Descuadre de saldo detectado: diferencia %s EUR "
                         "(suma movimientos vs saldo final declarado)" % dif
                     )
@@ -728,6 +744,19 @@ class N43Parser:
                 res.warnings.append(
                     "Registro 33 sin saldo final legible: no se pudo contrastar cuadre"
                 )
+
+        # Bandera de cuadre para API/UI: True (cuadra) / False (descuadre) /
+        # None (no hay datos de cierre con los que contrastar).
+        hay_datos_cuadre = (
+            declarado is not None
+            or decl_ndebe is not None
+            or decl_tdebe is not None
+            or decl_nhaber is not None
+            or decl_thaber is not None
+        )
+        res.saldos["cuadra"] = (not incidencias) if hay_datos_cuadre else None
+        if incidencias:
+            res.saldos["incidencias_cuadre"] = incidencias
 
     def _validate_lengths(self, res):
         # type: (ParseResult) -> None
@@ -765,6 +794,8 @@ class N43Parser:
             "num_errores": len(res.errores),
             "num_warnings": len(res.warnings),
             "num_reparados": len(res.reparado),
+            "apto_para_exportar": len(res.movimientos) > 0,
+            "cuadra": res.saldos.get("cuadra"),
         }
 
     def to_json(self, res):

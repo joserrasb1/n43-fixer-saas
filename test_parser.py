@@ -481,10 +481,16 @@ def test_parse_summary_counts(parser: N43Parser):
 # ============================ PARSER: ERRORES Y DESCUADRES ============================
 
 def test_parse_con_descuadre(parser: N43Parser):
+    """Modo tolerante: un descuadre de saldo NO bloquea el parseo. Se reporta
+    como aviso, `saldos.cuadra` queda en False y los movimientos siguen siendo
+    exportables (ok=True)."""
     res = parser._parse_text(_n43_estandar(descuadre=True), filename="descuadre.txt")
-    assert res.ok is False
-    assert "Descuadre de saldo detectado" in " ".join(res.errores)
+    assert res.ok is True
+    assert "Descuadre de saldo detectado" in " ".join(res.warnings)
+    assert not any("Descuadre" in e for e in res.errores)
     assert res.saldos["diferencia_saldo_final"] == -1.25
+    assert res.saldos["cuadra"] is False
+    assert res.resumen["apto_para_exportar"] is True
 
 
 def test_parse_longitud_corta(parser: N43Parser):
@@ -636,6 +642,7 @@ def test_estandar_cuadre_completo(parser: N43Parser):
     # Cuadre estricto: 5000 + 3712,25 = 8712,25 declarado en el registro 33
     assert res.saldos["saldo_final_declarado_trailer"] == 8712.25
     assert res.saldos["diferencia_saldo_final"] == 0.00
+    assert res.saldos["cuadra"] is True
     # Registro 33: contadores y totales al debe/haber (índices 20:25 ... 44:58)
     assert res.trailer["num_movimientos_debe"] == 3
     assert res.trailer["total_debe"] == 1837.75
@@ -684,10 +691,12 @@ def test_estandar_registro22_fechas_y_concepto(parser: N43Parser):
 
 
 def test_estandar_descuadre_saldo(parser: N43Parser):
+    """Modo tolerante: el descuadre del registro 33 se reporta como aviso."""
     res = parser._parse_text(_n43_estandar(descuadre=True), filename="desc.txt")
-    assert res.ok is False
-    assert any("Descuadre de saldo detectado" in e for e in res.errores)
+    assert res.ok is True
+    assert any("Descuadre de saldo detectado" in w for w in res.warnings)
     assert res.saldos["diferencia_saldo_final"] == -1.25
+    assert res.saldos["cuadra"] is False
 
 
 def test_estandar_linea_corta_se_rellena_a_80(parser: N43Parser):
