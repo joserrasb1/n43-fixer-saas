@@ -47,38 +47,44 @@ pytest --cov=parser_engine --cov=security_utils --cov=main --cov-report=term-mis
 
 ## Despliegue en Render
 
-1. Este repositorio ya incluye `render.yaml`.
-2. En Render: **New → Web Service** → conecta `joserrasb1/n43-fixer-saas`.
-3. Render detecta `render.yaml` y arranca con `uvicorn main:app --host 0.0.0.0 --port $PORT` en plan gratuito.
-4. Tras el build, abre la URL pública asignada.
+El repositorio ya incluye `render.yaml` (plan gratis, región Frankfurt,
+health check en `/health` y `autoDeploy` activo), así que desplegar es
+conectar el repo:
 
-> Render free duerme el servicio tras 15 min sin tráfico: al volver a visitarlo
-> se ve la página «Application loading...» (~1 min). Para evitarla en gratis,
-> ver la sección siguiente.
+1. En Render: **New → Web Service** → conecta `joserrasb1/n43-fixer-saas`.
+2. Render detecta `render.yaml` y arranca
+   `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+3. Tras el build, abre la URL pública asignada y comprueba
+   `curl -s https://<tu-servicio>.onrender.com/health`
+   → `{"status":"ok","service":"n43-fixer",...}`.
 
-## Despliegue gratis en Alwaysdata (sin «Application loading»)
+### POC en plan gratuito (0 $, sin tarjeta)
 
-[Alwaysdata](https://www.alwaysdata.com) (Francia, plan **Free**: 0 €, sin
-tarjeta) sirve las apps Python con uWSGI **siempre encendidas**: no hay frío,
-no hay página de carga y el proceso es único y persistente, de modo que el
-estado en memoria (`app.state.last` que usan los exports) sigue funcionando
-igual que en Render. El mismo flujo ya está probado con el oráculo de
-`botamazon`.
+- El servicio **se duerme a los 15 min** sin tráfico: al volver a visitarlo
+  aparece la página «Application loading...» (~1 min de despertar).
+- 750 h de instancia al mes por workspace, compartidas entre todos los
+  servicios gratis (los servicios dormidos no consumen horas).
+- El disco es efímero y el estado en memoria (`app.state.last` que usan los
+  exports) se pierde al dormirse o al redeplegar: si el cliente ya no tiene
+  el fichero original a mano, hay que volver a subirlo.
 
-1. Abre una sesión SSH: `ssh [cuenta]@ssh-[cuenta].alwaysdata.net`
-2. Ejecuta el script de instalación del repo: `bash alwaysdata/setup_app.sh`
-   (si el repo es privado, sube la carpeta por SFTP en lugar de clonar).
-3. En el panel `admin.alwaysdata.com` → **Web > Sites → Añadir un site**:
-   - Tipo: **Python WSGI** · Address: `n43fixer.alwaysdata.net`
-   - Application path: `~/n43fixer/wsgi.py` (entry WSGI que envuelve FastAPI con `a2wsgi`)
-   - Working directory: `~/n43fixer` · Virtualenv: `~/venvs/n43fixer`
-4. Prueba: `curl -s https://n43fixer.alwaysdata.net/health`
+### Producción siempre encendida (7 $/mes)
 
-Límites del plan Free a tener en cuenta (POC): 256 MB de RAM (los ficheros
-típicos van bien; para extracciones muy grandes con XLSX, usar CSV), ¼ de CPU
-(las exportaciones tardan ~2-3× más que en Render) y uso **no comercial**:
-cuando el producto empiece a facturarse, toca migrar a un plan de pago
-(Plus desde 6 €/mes, el mismo código y la misma plataforma).
+Cuando el producto empiece a facturar, **sin migrar nada** (mismo servicio,
+misma URL, mismo código):
+
+1. Añade tarjeta en **Billing** (verificación de 1 $, reembolsada).
+2. Servicio → **Settings ▸ Compute Plan** → `0.5c-512mb`
+   (0.5 CPU / 512 MB, **7 $/mes**, prorrateado al segundo) → **Apply**.
+3. Cambia en `render.yaml` `plan: free` → `plan: 0.5c-512mb` y pushea:
+   el blueprint tiene `autoDeploy: true`, y mientras el fichero diga
+   `free`, un sync volvería a bajar el servicio al plan gratuito.
+4. Listo: **nunca se duerme** y no hay página de carga (tampoco en los
+   deploys: el zero-downtime está incluido en el plan Hobby).
+
+Se puede volver a `free` en cualquier momento desde el mismo sitio.
+Con un plan Starter de 29 €/mes del SaaS, los 7 $/mes de hosting son
+marginalidad.
 
 ## Notas
 
