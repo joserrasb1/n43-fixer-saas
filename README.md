@@ -6,7 +6,7 @@ SaaS MVP para gestorías en España: sube ficheros bancarios **Norma 43 (AEB)** 
 2. **Reparar** automáticamente fallos de codificación/formato (UTF-8/Latin-1/CP1252, BOM, CRLF, tabuladores).
 3. **Convertir** a JSON / CSV / Excel listo para pre-asentamientos contables.
 
-Versión endurecida con saneado de entradas, límites estrictos, cabeceras de seguridad y suite de **120 tests** (cobertura 93%).
+Versión endurecida con saneado de entradas, límites estrictos, cabeceras de seguridad y suite de **123 tests** (cobertura 93%).
 
 ## Características de seguridad
 
@@ -51,6 +51,34 @@ pytest --cov=parser_engine --cov=security_utils --cov=main --cov-report=term-mis
 2. En Render: **New → Web Service** → conecta `joserrasb1/n43-fixer-saas`.
 3. Render detecta `render.yaml` y arranca con `uvicorn main:app --host 0.0.0.0 --port $PORT` en plan gratuito.
 4. Tras el build, abre la URL pública asignada.
+
+> Render free duerme el servicio tras 15 min sin tráfico: al volver a visitarlo
+> se ve la página «Application loading...» (~1 min). Para evitarla en gratis,
+> ver la sección siguiente.
+
+## Despliegue gratis en Alwaysdata (sin «Application loading»)
+
+[Alwaysdata](https://www.alwaysdata.com) (Francia, plan **Free**: 0 €, sin
+tarjeta) sirve las apps Python con uWSGI **siempre encendidas**: no hay frío,
+no hay página de carga y el proceso es único y persistente, de modo que el
+estado en memoria (`app.state.last` que usan los exports) sigue funcionando
+igual que en Render. El mismo flujo ya está probado con el oráculo de
+`botamazon`.
+
+1. Abre una sesión SSH: `ssh [cuenta]@ssh-[cuenta].alwaysdata.net`
+2. Ejecuta el script de instalación del repo: `bash alwaysdata/setup_app.sh`
+   (si el repo es privado, sube la carpeta por SFTP en lugar de clonar).
+3. En el panel `admin.alwaysdata.com` → **Web > Sites → Añadir un site**:
+   - Tipo: **Python WSGI** · Address: `n43fixer.alwaysdata.net`
+   - Application path: `~/n43fixer/wsgi.py` (entry WSGI que envuelve FastAPI con `a2wsgi`)
+   - Working directory: `~/n43fixer` · Virtualenv: `~/venvs/n43fixer`
+4. Prueba: `curl -s https://n43fixer.alwaysdata.net/health`
+
+Límites del plan Free a tener en cuenta (POC): 256 MB de RAM (los ficheros
+típicos van bien; para extracciones muy grandes con XLSX, usar CSV), ¼ de CPU
+(las exportaciones tardan ~2-3× más que en Render) y uso **no comercial**:
+cuando el producto empiece a facturarse, toca migrar a un plan de pago
+(Plus desde 6 €/mes, el mismo código y la misma plataforma).
 
 ## Notas
 

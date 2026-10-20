@@ -11,6 +11,7 @@ Cubre:
 - Inyecciones (XSS, template, code exec, SQL, traversal)
 - Exportaciones (JSON, CSV, XLSX)
 - API FastAPI end-to-end (TestClient)
+- Entry WSGI (wsgi.py) para hosting compartido: Alwaysdata / PythonAnywhere
 """
 
 from __future__ import annotations
@@ -1119,3 +1120,47 @@ def test_api_export_uses_sanitized_name(client):
     cd = r.headers["content-disposition"]
     assert '"' in cd  # nombre entre comillas
     assert "€" not in cd  # sin caracteres no ASCII en header
+
+
+# ================ ENTRY WSGI (ALWAYSDATA / PYTHONANYWHERE) =================
+# wsgi.py adapta la app FastAPI a WSGI con a2wsgi para que uWSGI la sirva en
+# Alwaysdata (plan Free, siempre encendida: sin «Application loading...»).
+
+
+def _wsgi_get(path):
+    """Cliente WSGI mínimo: envía un GET a `wsgi.application`."""
+    from wsgiref.util import setup_testing_defaults
+
+    import wsgi
+
+    environ = {}
+    setup_testing_defaults(environ)
+    environ["REQUEST_METHOD"] = "GET"
+    environ["PATH_INFO"] = path
+    estado = {}
+
+    def start_response(status, headers, exc_info=None):
+        estado["status"] = status
+        estado["headers"] = headers
+
+    cuerpo = b"".join(wsgi.application(environ, start_response))
+    return estado["status"], cuerpo
+
+
+def test_wsgi_expone_application():
+    import wsgi
+
+    assert callable(wsgi.application)
+
+
+def test_wsgi_landing_200():
+    status, cuerpo = _wsgi_get("/")
+    assert status.startswith("200")
+    assert b"N43 Fixer" in cuerpo
+
+
+def test_wsgi_health_200():
+    status, cuerpo = _wsgi_get("/health")
+    assert status.startswith("200")
+    assert b'"ok"' in cuerpo
+    assert b"n43-fixer" in cuerpo
