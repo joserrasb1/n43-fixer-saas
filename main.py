@@ -105,6 +105,7 @@ tailwind.config = {
         <li class="flex items-start gap-2.5"><svg class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>Validación de cabeceras, movimientos y registros finales</li>
         <li class="flex items-start gap-2.5"><svg class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>Reparación automática de UTF-8 / Latin-1 / CP1252, BOM y saltos de línea</li>
         <li class="flex items-start gap-2.5"><svg class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>Comprobación de cuadre: saldo inicial + movimientos = saldo final</li>
+        <li class="flex items-start gap-2.5"><svg class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>Diagnóstico con la línea y posición exactas del fallo</li>
       </ul>
       <div class="mt-8 flex flex-wrap gap-3">
         <a href="#demo" class="rounded-lg bg-indigo-500 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 transition hover:bg-indigo-400">Analizar mi fichero</a>
@@ -260,13 +261,50 @@ tailwind.config = {
     <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <span class="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-100 text-sm font-extrabold text-indigo-700">2</span>
       <h3 class="mt-4 font-bold text-slate-900">Validamos y reparamos</h3>
-      <p class="mt-1.5 text-sm text-slate-600">Comprobamos cabeceras y saldos, corregimos codificación y te señalamos cualquier descuadre.</p>
+      <p class="mt-1.5 text-sm text-slate-600">Comprobamos cabeceras y saldos, corregimos la codificación y te señalamos en qué línea y posición está el descuadre.</p>
     </div>
     <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <span class="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-100 text-sm font-extrabold text-indigo-700">3</span>
       <h3 class="mt-4 font-bold text-slate-900">Descarga limpio</h3>
       <p class="mt-1.5 text-sm text-slate-600">Exporta a Excel, CSV o JSON listo para importar como pre-asentamiento en tu contabilidad.</p>
     </div>
+  </div>
+</section>
+
+<!-- ============ VALOR / EL DÍA 1 DE MES ============ -->
+<section id="por-que" class="mx-auto max-w-6xl scroll-mt-20 px-4 pb-16 sm:px-6">
+  <div class="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm sm:p-10">
+    <div class="mx-auto max-w-2xl text-center">
+      <p class="text-xs font-bold uppercase tracking-widest text-indigo-600">El día 1 de cada mes</p>
+      <h2 class="mt-2 text-3xl font-bold tracking-tight text-slate-900">Cientos de ficheros. Uno no cuadra. Y el cierre espera.</h2>
+      <p class="mt-3 text-slate-600">
+        Un <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">.n43</code> con acentos que no abre, otro que descuadra unos céntimos y no hay manera de encontrar la línea en el bloc de notas. Esta herramienta hace ese trabajo por ti: diagnostica el fallo exacto, repara el fichero y lo deja listo para importar en segundos, no en una hora de prueba y error.
+      </p>
+    </div>
+    <div class="mt-10 grid gap-5 md:grid-cols-3">
+      <div class="rounded-2xl border border-slate-200 bg-slate-50 p-6">
+        <span class="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
+          <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        </span>
+        <h3 class="mt-4 font-bold text-slate-900">Sabes qué falla y dónde</h3>
+        <p class="mt-1.5 text-sm text-slate-600">Te decimos el registro y la posición exacta del problema (cabecera, movimiento o cierre), no un «fichero no válido» sin más.</p>
+      </div>
+      <div class="rounded-2xl border border-slate-200 bg-slate-50 p-6">
+        <span class="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
+          <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        </span>
+        <h3 class="mt-4 font-bold text-slate-900">Se arregla solo</h3>
+        <p class="mt-1.5 text-sm text-slate-600">Codificación UTF-8 / Latin-1 / CP1252, BOM, saltos de línea y relleno de 80 posiciones, sin tocar ni un importe.</p>
+      </div>
+      <div class="rounded-2xl border border-slate-200 bg-slate-50 p-6">
+        <span class="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
+          <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        </span>
+        <h3 class="mt-4 font-bold text-slate-900">Llega cuadrado a tu programa</h3>
+        <p class="mt-1.5 text-sm text-slate-600">Comprobamos saldo inicial + movimientos contra el saldo final y exportas Excel, CSV o JSON listo para pre-asentar.</p>
+      </div>
+    </div>
+    <p class="mt-8 text-center text-xs text-slate-500">Sin registro, sin tarjeta y tu fichero no se almacena.</p>
   </div>
 </section>
 
