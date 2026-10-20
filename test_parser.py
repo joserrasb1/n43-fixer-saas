@@ -753,6 +753,39 @@ def test_no_repara_espacios_finales(parser: N43Parser):
     assert res.saldos["suma_importes"] == 3712.25
 
 
+# ---------------------------- MUESTRA DEL REPO (ejemplos/) ----------------------------
+
+def test_ejemplo_n43_muestra_cuadra(parser: N43Parser):
+    """ejemplos/n43_muestra.txt (generado por generar_ejemplos.py): fichero
+    "conocido bueno" para probar la app manualmente.
+
+    1.250,00 + 1.850,00 - 89,75 + 640,25 - 125,40 = 3.525,10 EUR, con los
+    totales y recuentos del registro 33 cuadrados al céntimo. Sirve como
+    regresión: si un cambio rompe la lectura posicional, este test lo detecta.
+    """
+    ruta = Path(__file__).parent / "ejemplos" / "n43_muestra.txt"
+    assert ruta.is_file(), "Falta ejemplos/n43_muestra.txt (ejecuta generar_ejemplos.py)"
+    res = parser.parse_bytes(ruta.read_bytes(), filename="n43_muestra.txt")
+
+    assert res.ok is True
+    assert res.errores == []
+    assert res.reparado == []
+    assert res.resumen["lineas_movimiento"] == 4
+    assert [m.signo for m in res.movimientos] == ["+", "-", "+", "-"]
+    assert [m.fecha_operacion for m in res.movimientos] == [
+        "2026-10-01", "2026-10-05", "2026-10-10", "2026-10-14",
+    ]
+    assert res.saldos["suma_importes"] == 2275.10
+    assert res.saldos["saldo_inicial_estimado"] == 1250.00
+    assert res.saldos["saldo_final_declarado_trailer"] == 3525.10
+    assert res.saldos["diferencia_saldo_final"] == 0.00
+    assert res.saldos["cuadra"] is True
+    # Único aviso: el informativo de cuadre correcto (sin descuadres)
+    assert all("cuadran" in w for w in res.warnings)
+    # Cada línea debe medir exactamente 80 posiciones (estándar AEB 43)
+    assert all(l.length == 80 for l in res.lineas)
+
+
 # ============================ PARSER: LÍMITES / DoS ============================
 
 def test_parse_too_many_lines(parser: N43Parser):
